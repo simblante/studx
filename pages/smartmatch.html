@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>SmartMatch | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <h1>STUDX SmartMatch</h1>
+  <p class="sub">Tell us what you need. SmartMatch ranks the best available listings for you.</p>
+
+  <div class="notice">
+    <b>Honest note:</b> SmartMatch is a transparent, rule-based ranking algorithm — not a large AI model. It scores each listing on keyword relevance, price, verification, rating, condition, and recency. The design allows a real AI API to be added later.
+  </div>
+
+  <form id="smartForm" class="smart-form">
+    <div class="field">
+      <label for="query">What are you looking for?</label>
+      <input id="query" placeholder="e.g. scientific calculator under 500">
+    </div>
+
+    <div class="smart-filters">
+      <div class="field">
+        <label for="category">Category</label>
+        <select id="category">
+          <option value="">Any</option>
+          <option>Books</option>
+          <option>Gadgets</option>
+          <option>Electronics</option>
+          <option>Uniforms</option>
+          <option>School Supplies</option>
+          <option>Food</option>
+          <option>Fashion</option>
+          <option>Others</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="budget">Max budget (₱)</label>
+        <input id="budget" type="number" min="0" step="1" placeholder="e.g. 500">
+      </div>
+
+      <div class="field">
+        <label for="campus">Campus</label>
+        <input id="campus" placeholder="e.g. Main Campus">
+      </div>
+
+      <div class="field">
+        <label for="condition">Condition</label>
+        <select id="condition">
+          <option value="">Any</option>
+          <option>Brand New</option>
+          <option>Like New</option>
+          <option>Good</option>
+          <option>Fair</option>
+          <option>Poor</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="minRating">Min seller rating</label>
+        <select id="minRating">
+          <option value="0">Any</option>
+          <option value="3">3★ and up</option>
+          <option value="4">4★ and up</option>
+          <option value="4.5">4.5★ and up</option>
+        </select>
+      </div>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <button class="btn btn-primary btn-lg" type="submit">Run SmartMatch</button>
+  </form>
+
+  <div id="resultsRoot"></div>
+</main>
+
+<script type="module">
+import { auth, db } from "../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../js/ui.js";
+
+renderHeader();
+
+const form = document.getElementById("smartForm");
+const resultsRoot = document.getElementById("resultsRoot");
+const val = id => document.getElementById(id).value.trim();
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+// Condition ranks — higher is better.
+const CONDITION_SCORE = {
+  "Brand New": 5, "Like New": 4, "Good": 3, "Fair": 2, "Poor": 1
+};
+
+// ---------- THE RANKING ALGORITHM ----------
+// Pure function: takes listings + query + filters, returns sorted results with score breakdown.
+// Weights sum to 100.
+const WEIGHTS = {
+  keyword: 35,
+  price: 20,
+  verified: 15,
+  rating: 10,
+  condition: 10,
+  recency: 10
+};
+
+function rankListings(listings, query, filters) {
+  const qWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+
+  return listings
+    .map(l => {
+      const breakdown = {};
+
+      // 1. Keyword relevance — how many query words appear in title + description.
+      const haystack = ((l.title || "") + " " + (l.description || "") + " " + (l.category || "")).toLowerCase();
+      let kwHits = 0;
+      qWords.forEach(w => { if (haystack.includes(w)) kwHits++; });
+      const keywordRatio = qWords.length === 0 ? 1 : kwHits / qWords.length;
+      breakdown.keyword = Math.round(keywordRatio * WEIGHTS.keyword);
+
+      // 2. Price fit — full points if within budget; scale down if over.
+      const budget = filters.budget;
+      if (!budget || budget <= 0) {
+        breakdown.price = WEIGHTS.price; // no budget given → full points
+      } else if (l.price <= budget) {
+        breakdown.price = WEIGHTS.price;
+      } else {
+        const overshoot = (l.price - budget) / budget;
+        breakdown.price = Math.max(0, Math.round(WEIGHTS.price * (1 - overshoot)));
+      }
+
+      // 3. Verification — binary bonus.
+      breakdown.verified = l.sellerVerified ? WEIGHTS.verified : 0;
+
+      // 4. Rating — scaled 0–5, default 0 if no ratings yet.
+      const rating = Number(l.ratingAverage || 0);
+      breakdown.rating = Math.round((rating / 5) * WEIGHTS.rating);
+
+      // 5. Condition — scaled 1–5.
+      const cond = CONDITION_SCORE[l.condition] || 0;
+      breakdown.condition = Math.round((cond / 5) * WEIGHTS.condition);
+
+      // 6. Recency — full points if posted within last 30 days; decay after.
+      let recency = WEIGHTS.recency;
+      if (l.createdAt?.toMillis) {
+        const ageDays = (Date.now() - l.createdAt.toMillis()) / (1000 * 60 * 60 * 24);
+        if (ageDays > 30) recency = Math.max(0, Math.round(WEIGHTS.recency * (1 - (ageDays - 30) / 180)));
+      }
+      breakdown.recency = recency;
+
+      const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
+      return { listing: l, breakdown, total };
+    })
+    .filter(r => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+}
+// ---------- END ALGORITHM ----------
+
+let currentUser = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("auth/login.html"); return; }
+  currentUser = user;
+});
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  const submitBtn = form.querySelector("button[type=submit]");
+  const msg = form.querySelector(".form-msg");
+  msg.textContent = ""; msg.className = "form-msg";
+  submitBtn.disabled = true; const label = submitBtn.textContent; submitBtn.textContent = "Searching...";
+
+  try {
+    const q = val("query");
+    if (!q && !val("category")) throw { userMessage: "Please type what you're looking for, or pick a category." };
+
+    const filters = {
+      category: val("category"),
+      budget: Number(val("budget")) || 0,
+      campus: val("campus").toLowerCase(),
+      condition: val("condition"),
+      minRating: Number(val("minRating")) || 0
+    };
+
+    // Pull AVAILABLE listings — no composite index needed.
+    const snap = await getDocs(query(
+      collection(db, "listings"),
+      where("status", "==", "AVAILABLE")
+    ));
+    let listings = [];
+    snap.forEach(d => listings.push({ id: d.id, ...d.data() }));
+
+    // Apply strict filters (exact match).
+    listings = listings.filter(l => {
+      if (filters.category && l.category !== filters.category) return false;
+      if (filters.condition && l.condition !== filters.condition) return false;
+      if (filters.campus && !String(l.campus || "").toLowerCase().includes(filters.campus)) return false;
+      if (filters.minRating > 0 && Number(l.ratingAverage || 0) < filters.minRating) return false;
+      return true;
+    });
+
+    const ranked = rankListings(listings, q, filters);
+
+    if (ranked.length === 0) {
+      resultsRoot.replaceChildren(buildEmpty());
+    } else {
+      resultsRoot.replaceChildren(buildResults(ranked, q));
+    }
+  } catch (err) {
+    msg.textContent = err.userMessage || friendlyError(err);
+    msg.classList.add("error");
+  } finally {
+    submitBtn.disabled = false; submitBtn.textContent = label;
+  }
+});
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  box.style.marginTop = "22px";
+  box.append(el("p", "", "No listings matched your SmartMatch request. Try removing a filter or using fewer words."));
+  return box;
+}
+
+function buildResults(ranked, query) {
+  const wrap = el("div", "smart-results");
+  wrap.append(el("h2", "smart-heading", "SmartMatch results (" + ranked.length + ")"));
+
+  ranked.forEach((r, idx) => {
+    wrap.append(buildResultCard(r, idx + 1, query));
+  });
+  return wrap;
+}
+
+function buildResultCard(r, rank, query) {
+  const { listing: l, breakdown, total } = r;
+  const card = el("article", "smart-card");
+
+  // --- Left: ranking + basic info ---
+  const left = el("div", "smart-left");
+  const rankBadge = el("div", "smart-rank");
+  rankBadge.append(el("b", "", "#" + rank), el("span", "", total + "/100"));
+  left.append(rankBadge);
+
+  left.append(el("h3", "smart-title", l.title));
+  left.append(el("p", "smart-price", peso(l.price)));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", l.condition || "—"));
+  meta.append(el("span", "chip", l.campus || "—"));
+  meta.append(el("span", "chip", l.category || "—"));
+  if (l.sellerVerified) meta.append(el("span", "chip swap", "Verified"));
+  left.append(meta);
+
+  left.append(el("p", "smart-seller", "Seller: " + (l.sellerName || "Student")));
+
+  const view = el("a", "btn btn-outline", "View listing");
+  view.href = "marketplace/product.html?id=" + l.id;
+  view.style.marginTop = "10px";
+  left.append(view);
+
+  // --- Right: score breakdown (transparency) ---
+  const right = el("div", "smart-right");
+  right.append(el("h4", "smart-breakdown-title", "Score breakdown"));
+
+  const bars = el("ul", "smart-bars");
+  [
+    ["Keyword", breakdown.keyword, WEIGHTS.keyword],
+    ["Price fit", breakdown.price, WEIGHTS.price],
+    ["Verified", breakdown.verified, WEIGHTS.verified],
+    ["Rating", breakdown.rating, WEIGHTS.rating],
+    ["Condition", breakdown.condition, WEIGHTS.condition],
+    ["Recency", breakdown.recency, WEIGHTS.recency]
+  ].forEach(([label, value, max]) => {
+    const li = el("li", "smart-bar");
+    li.append(el("span", "smart-bar-label", label));
+    const track = el("div", "smart-bar-track");
+    const fill = el("div", "smart-bar-fill");
+    fill.style.width = (value / max * 100) + "%";
+    track.append(fill);
+    li.append(track);
+    li.append(el("span", "smart-bar-value", value + "/" + max));
+    bars.append(li);
+  });
+  right.append(bars);
+
+  card.append(left, right);
+  return card;
+}
+</script>
+</body>
+</html>

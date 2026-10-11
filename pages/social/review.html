@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Leave a review | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <div id="reviewRoot">
+    <p class="empty">Loading...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, collection, query, where, getDocs, addDoc,
+  serverTimestamp, updateDoc, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("reviewRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+const params = new URLSearchParams(location.search);
+const txId = params.get("tx");
+const swapId = params.get("swap");
+
+let currentUser = null;
+let currentProfile = null;
+let context = null;        // { revieweeId, revieweeName, source, sourceLabel }
+let existingReview = false;
+let selectedRating = 0;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    currentProfile = snap.exists() ? snap.data() : null;
+  } catch (e) { console.warn(e); }
+
+  if (!txId && !swapId) {
+    root.replaceChildren(el("p", "empty", "No transaction or swap specified."));
+    return;
+  }
+
+  await loadContext();
+});
+
+async function loadContext() {
+  try {
+    if (txId) {
+      await loadFromTransaction(txId);
+    } else {
+      await loadFromSwap(swapId);
+    }
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+async function loadFromTransaction(id) {
+  const snap = await getDoc(doc(db, "transactions", id));
+  if (!snap.exists()) {
+    root.replaceChildren(el("p", "empty", "This transaction no longer exists."));
+    return;
+  }
+  const tx = { id: snap.id, ...snap.data() };
+
+  // Must be a participant.
+  if (tx.buyerId !== currentUser.uid && tx.sellerId !== currentUser.uid) {
+    root.replaceChildren(el("p", "empty", "You don't have access to this transaction."));
+    return;
+  }
+
+  // Must be completed.
+  if (tx.status !== "COMPLETED") {
+    root.replaceChildren(el("p", "empty", "You can only review completed transactions."));
+    return;
+  }
+
+  // Determine who to review.
+  const isBuyer = tx.buyerId === currentUser.uid;
+  const revieweeId = isBuyer ? tx.sellerId : tx.buyerId;
+  const revieweeName = isBuyer ? (tx.sellerName || "Student") : (tx.buyerName || "Student");
+
+  context = {
+    revieweeId,
+    revieweeName,
+    source: "transaction",
+    sourceId: tx.id,
+    sourceLabel: "Transaction: " + (tx.listingTitle || "Listing")
+  };
+
+  // Check for existing review.
+  await checkExistingReview();
+  renderForm();
+}
+
+async function loadFromSwap(id) {
+  const snap = await getDoc(doc(db, "swapRequests", id));
+  if (!snap.exists()) {
+    root.replaceChildren(el("p", "empty", "This swap request no longer exists."));
+    return;
+  }
+  const s = { id: snap.id, ...snap.data() };
+
+  if (s.requesterId !== currentUser.uid && s.ownerId !== currentUser.uid) {
+    root.replaceChildren(el("p", "empty", "You don't have access to this swap."));
+    return;
+  }
+
+  if (s.status !== "COMPLETED") {
+    root.replaceChildren(el("p", "empty", "You can only review completed swaps."));
+    return;
+  }
+
+  const isRequester = s.requesterId === currentUser.uid;
+  const revieweeId = isRequester ? s.ownerId : s.requesterId;
+  const revieweeName = isRequester ? (s.ownerName || "Student") : (s.requesterName || "Student");
+
+  context = {
+    revieweeId,
+    revieweeName,
+    source: "swap",
+    sourceId: s.id,
+    sourceLabel: "Swap: " + (s.wantedTitle || "Item") + " ⇄ " + (s.offeredTitle || "Item")
+  };
+
+  await checkExistingReview();
+  renderForm();
+}
+
+async function checkExistingReview() {
+  // Single equality filter only — no composite index needed.
+  // We filter by sourceId on the client side below.
+  const q = query(
+    collection(db, "reviews"),
+    where("reviewerId", "==", currentUser.uid)
+  );
+  const snap = await getDocs(q);
+  existingReview = false;
+  snap.forEach(d => {
+    if (d.data().sourceId === context.sourceId) existingReview = true;
+  });
+}
+
+function renderForm() {
+  const wrap = el("div");
+
+  wrap.append(el("h1", "", "Leave a review"));
+  wrap.append(el("p", "sub", "Your honest feedback helps build trust in the STUDX community."));
+
+  // Context summary
+  const summary = el("div", "request-summary");
+  summary.append(el("h3", "", "You are reviewing " + context.revieweeName));
+  summary.append(el("p", "request-seller", context.sourceLabel));
+  wrap.append(summary);
+
+  if (existingReview) {
+    const notice = el("div", "notice warn");
+    notice.append(el("b", "", "You already reviewed this " + context.source + "."));
+    notice.append(el("p", "", "Reviews are permanent and cannot be edited or deleted to keep the trust system fair."));
+    wrap.append(notice);
+
+    const back = el("p", "alt-link");
+    const a = el("a", "", "Back to profile");
+    a.href = "../profile.html";
+    back.append(a);
+    wrap.append(back);
+
+    root.replaceChildren(wrap);
+    return;
+  }
+
+  const form = el("form");
+  form.id = "reviewForm";
+  form.noValidate = true;
+
+  // Star rating
+  const starField = el("div", "field");
+  starField.append(el("label", "", "Rating (1–5)"));
+  const stars = el("div", "star-picker");
+  stars.id = "starPicker";
+  for (let i = 1; i <= 5; i++) {
+    const s = el("button", "star", "★");
+    s.type = "button";
+    s.dataset.value = i;
+    stars.append(s);
+  }
+  starField.append(stars);
+  const ratingLabel = el("p", "star-label", "Tap a star to rate");
+  ratingLabel.id = "ratingLabel";
+  starField.append(ratingLabel);
+  form.append(starField);
+
+  // Comment
+  const commentField = el("div", "field");
+  const cLabel = el("label", "", "Comment (optional)");
+  cLabel.setAttribute("for", "comment");
+  commentField.append(cLabel);
+  const ta = el("textarea");
+  ta.id = "comment";
+  ta.maxLength = 400;
+  ta.placeholder = "Was the item as described? Was the meetup smooth? Keep it respectful and specific.";
+  commentField.append(ta);
+  commentField.append(el("small", "", "Max 400 characters. Reviews are permanent and cannot be edited."));
+  form.append(commentField);
+
+  const formMsg = el("p", "form-msg");
+  formMsg.setAttribute("role", "alert");
+  form.append(formMsg);
+
+  const btn = el("button", "btn btn-primary btn-lg", "Submit review");
+  btn.type = "submit";
+  form.append(btn);
+
+  wrap.append(form);
+
+  const back = el("p", "alt-link");
+  const a = el("a", "", "Cancel");
+  a.href = "../profile.html";
+  back.append(a);
+  wrap.append(back);
+
+  root.replaceChildren(wrap);
+
+  // Wire star picker
+  stars.addEventListener("click", e => {
+    const b = e.target.closest(".star");
+    if (!b) return;
+    selectedRating = Number(b.dataset.value);
+    paintStars(selectedRating);
+  });
+
+  // Hover preview
+  stars.addEventListener("mouseover", e => {
+    const b = e.target.closest(".star");
+    if (!b) return;
+    paintStars(Number(b.dataset.value), true);
+  });
+  stars.addEventListener("mouseleave", () => {
+    paintStars(selectedRating);
+  });
+
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    handleSubmit(form, async () => {
+      if (selectedRating < 1) throw { userMessage: "Please choose a rating from 1 to 5 stars." };
+
+      const comment = ta.value.trim();
+      if (comment.length > 400) throw { userMessage: "Comment is too long (max 400 characters)." };
+
+      await addDoc(collection(db, "reviews"), {
+        reviewerId: currentUser.uid,
+        reviewerName: currentProfile?.fullName || currentUser.displayName || "Student",
+        revieweeId: context.revieweeId,
+        revieweeName: context.revieweeName,
+        source: context.source,        // "transaction" | "swap"
+        sourceId: context.sourceId,
+        sourceLabel: context.sourceLabel,
+        rating: selectedRating,
+        comment,
+        createdAt: serverTimestamp()
+      });
+
+      // Best-effort update of reviewee's ratingAverage + ratingCount.
+      try {
+        const revieweeRef = doc(db, "users", context.revieweeId);
+        const revieweeSnap = await getDoc(revieweeRef);
+        if (revieweeSnap.exists()) {
+          const d = revieweeSnap.data();
+          const oldCount = Number(d.ratingCount || 0);
+          const oldAvg = Number(d.ratingAverage || 0);
+          const newCount = oldCount + 1;
+          const newAvg = ((oldAvg * oldCount) + selectedRating) / newCount;
+          await updateDoc(revieweeRef, {
+            ratingCount: newCount,
+            ratingAverage: Math.round(newAvg * 100) / 100
+          });
+        }
+      } catch (e) { console.warn("Could not update rating aggregate:", e); }
+
+      toast("Review submitted. Thank you!");
+      setTimeout(() => location.href = "../profile.html", 900);
+    });
+  });
+}
+
+function paintStars(n, hover) {
+  const stars = document.querySelectorAll("#starPicker .star");
+  stars.forEach(s => {
+    const v = Number(s.dataset.value);
+    s.classList.toggle("on", v <= n);
+    s.classList.toggle("hover", !!hover);
+  });
+  const label = document.getElementById("ratingLabel");
+  if (label) {
+    label.textContent = n > 0 ? n + " / 5" : "Tap a star to rate";
+  }
+}
+</script>
+</body>
+</html>

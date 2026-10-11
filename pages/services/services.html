@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Student services | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Student services</h1>
+      <p class="sub">Students helping students with real skills. Tutoring, design, editing, and technical help.</p>
+    </div>
+    <a class="btn btn-primary" href="create-service.html">+ Offer a service</a>
+  </div>
+
+  <div class="notice">
+    <b>Academic honesty.</b> Services on STUDX are for tutoring, mentoring, and legitimate skills. Doing graded work for another student is not allowed.
+  </div>
+
+  <div class="tab-bar" id="tabBar">
+    <button class="tab active" data-filter="ALL">All</button>
+    <button class="tab" data-filter="Programming">Programming</button>
+    <button class="tab" data-filter="Creative">Creative</button>
+    <button class="tab" data-filter="Academic">Academic</button>
+    <button class="tab" data-filter="Other">Other</button>
+  </div>
+
+  <div id="servicesRoot">
+    <p class="empty">Loading services...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, friendlyError } from "../../js/ui.js";
+import { buildThumbUrl } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const root = document.getElementById("servicesRoot");
+const tabBar = document.getElementById("tabBar");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+let allServices = [];
+let activeFilter = "ALL";
+
+tabBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  tabBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeFilter = btn.dataset.filter;
+  renderList();
+});
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  await loadServices();
+});
+
+async function loadServices() {
+  try {
+    // Single-field query — no composite index needed.
+    const q = query(
+      collection(db, "services"),
+      where("status", "==", "ACTIVE")
+    );
+    const snap = await getDocs(q);
+    allServices = [];
+    snap.forEach(d => allServices.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc (avoids index requirement).
+    allServices.sort((a, b) => {
+      const ta = a.createdAt?.toMillis?.() || 0;
+      const tb = b.createdAt?.toMillis?.() || 0;
+      return tb - ta;
+    });
+
+    renderList();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderList() {
+  const filtered = activeFilter === "ALL"
+    ? allServices
+    : allServices.filter(s => s.category === activeFilter);
+
+  if (filtered.length === 0) {
+    root.replaceChildren(buildEmpty());
+    return;
+  }
+
+  const grid = el("div", "service-grid");
+  filtered.forEach(s => grid.append(buildCard(s)));
+  root.replaceChildren(grid);
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  const msg = activeFilter === "ALL"
+    ? "No services yet. Be the first to offer a skill on your campus."
+    : "No services in this category.";
+  box.append(el("p", "", msg));
+  if (activeFilter === "ALL") {
+    const a = el("a", "btn btn-primary", "Offer the first service");
+    a.href = "create-service.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+  return box;
+}
+
+function buildCard(s) {
+  const card = el("article", "service-card");
+
+  // ----- Thumbnail -----
+  // If the service has an image, show it (optimized by Cloudinary).
+  // Otherwise, fall back to the gradient header with the category name.
+  const firstImage = Array.isArray(s.images) && s.images.length > 0 ? s.images[0] : "";
+
+  if (firstImage) {
+    // Show a photo tile with the category badge overlaid.
+    const thumb = el("div", "service-thumb");
+    const img = document.createElement("img");
+    img.src = buildThumbUrl(firstImage, 600, 400);
+    img.alt = s.title || "Service photo";
+    img.loading = "lazy";
+    img.className = "service-thumb-img";
+    img.onerror = () => {
+      // Fall back to the plain header if the image fails.
+      thumb.replaceWith(buildServiceHead(s));
+    };
+    thumb.append(img);
+
+    // Category badge over the photo.
+    const badge = el("span", "service-thumb-badge", s.category || "Service");
+    thumb.append(badge);
+
+    card.append(thumb);
+  } else {
+    // No image → keep the original gradient head.
+    card.append(buildServiceHead(s));
+  }
+
+  const body = el("div", "service-body");
+  body.append(el("h3", "service-title", s.title));
+  body.append(el("p", "service-price", peso(s.price) + " / " + (s.priceUnit || "fixed")));
+  body.append(el("p", "service-avail", "Available: " + (s.availability || "—")));
+
+  const provider = el("div", "service-provider");
+  provider.append(el("span", "seller-name", s.providerName || "Student"));
+  if (s.providerVerified) {
+    provider.append(el("span", "vbadge VERIFIED", "Verified"));
+  } else {
+    provider.append(el("span", "vbadge PENDING", "Pending"));
+  }
+  body.append(provider);
+
+  const rating = el("p", "service-rating");
+  rating.textContent = (s.ratingCount > 0)
+    ? "★ " + Number(s.ratingAverage).toFixed(1) + " (" + s.ratingCount + ")"
+    : "No ratings yet";
+  body.append(rating);
+
+  const actions = el("div", "service-actions");
+
+  const view = el("a", "btn btn-outline", "View details");
+  view.href = "service.html?id=" + s.id;
+  actions.append(view);
+
+  const req = el("button", "btn btn-primary", "Request (COMING SOON)");
+  req.disabled = true;
+  actions.append(req);
+
+  body.append(actions);
+  card.append(body);
+  return card;
+}
+
+// Original gradient header used when there's no photo.
+function buildServiceHead(s) {
+  const head = el("div", "service-head");
+  head.append(el("span", "service-cat", s.category || "Service"));
+  head.append(el("span", "service-sub", s.subcategory || ""));
+  return head;
+}
+</script>
+</body>
+</html>

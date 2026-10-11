@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>My services | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>My services</h1>
+      <p class="sub">Manage the services you offer on STUDX.</p>
+    </div>
+    <a class="btn btn-primary" href="create-service.html">+ Offer a service</a>
+  </div>
+
+  <div class="tab-bar" id="tabBar">
+    <button class="tab active" data-filter="ALL">All</button>
+    <button class="tab" data-filter="ACTIVE">Active</button>
+    <button class="tab" data-filter="PAUSED">Paused</button>
+    <button class="tab" data-filter="CLOSED">Closed</button>
+  </div>
+
+  <div id="servicesRoot">
+    <p class="empty">Loading your services...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs,
+  doc, updateDoc, deleteDoc, serverTimestamp, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("servicesRoot");
+const tabBar = document.getElementById("tabBar");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+let currentUser = null;
+let allServices = [];
+let activeFilter = "ALL";
+
+tabBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  tabBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeFilter = btn.dataset.filter;
+  renderList();
+});
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  await loadMyServices();
+});
+
+async function loadMyServices() {
+  try {
+    const q = query(
+      collection(db, "services"),
+      where("providerId", "==", currentUser.uid)
+    );
+    const snap = await getDocs(q);
+    allServices = [];
+    snap.forEach(d => allServices.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc (avoids index requirement).
+    allServices.sort((a, b) => {
+      const ta = a.createdAt?.toMillis?.() || 0;
+      const tb = b.createdAt?.toMillis?.() || 0;
+      return tb - ta;
+    });
+
+    renderList();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderList() {
+  const filtered = activeFilter === "ALL"
+    ? allServices
+    : allServices.filter(s => s.status === activeFilter);
+
+  if (filtered.length === 0) {
+    root.replaceChildren(buildEmpty());
+    return;
+  }
+
+  const grid = el("div", "service-grid");
+  filtered.forEach(s => grid.append(buildCard(s)));
+  root.replaceChildren(grid);
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  const msg = activeFilter === "ALL"
+    ? "You haven't offered any services yet."
+    : "No services in this status.";
+  box.append(el("p", "", msg));
+  if (activeFilter === "ALL") {
+    const a = el("a", "btn btn-primary", "Offer your first service");
+    a.href = "create-service.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+  return box;
+}
+
+function buildCard(s) {
+  const card = el("article", "service-card");
+
+  const head = el("div", "service-head");
+  head.append(el("span", "service-cat", s.category || "Service"));
+  head.append(el("span", "service-sub", s.subcategory || ""));
+  card.append(head);
+
+  const body = el("div", "service-body");
+  body.append(el("h3", "service-title", s.title));
+  body.append(el("p", "service-price", peso(s.price) + " / " + (s.priceUnit || "fixed")));
+  body.append(el("p", "service-avail", "Available: " + (s.availability || "—")));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "status-tag " + (s.status || "ACTIVE"), s.status || "ACTIVE"));
+  body.append(meta);
+
+  const stats = el("p", "my-stats");
+  stats.textContent = "Views: " + (s.viewCount || 0) + " • Posted " + fmtDate(s.createdAt);
+  body.append(stats);
+
+  // Quick actions
+  const actions = el("div", "my-actions");
+
+  const view = el("a", "btn btn-outline", "View");
+  view.href = "service.html?id=" + s.id;
+  actions.append(view);
+
+    const edit = el("a", "btn btn-secondary", "Edit");
+    edit.href = "edit-service.html?id=" + s.id;
+    actions.append(edit);
+
+  // Status toggles: show only what makes sense for the current status.
+  if (s.status === "ACTIVE") {
+    const p = el("button", "btn btn-secondary", "Pause");
+    p.onclick = () => changeStatus(s.id, "PAUSED");
+    actions.append(p);
+    const c = el("button", "btn btn-secondary", "Close");
+    c.onclick = () => changeStatus(s.id, "CLOSED");
+    actions.append(c);
+  } else if (s.status === "PAUSED") {
+    const a = el("button", "btn btn-secondary", "Activate");
+    a.onclick = () => changeStatus(s.id, "ACTIVE");
+    actions.append(a);
+    const c = el("button", "btn btn-secondary", "Close");
+    c.onclick = () => changeStatus(s.id, "CLOSED");
+    actions.append(c);
+  } else if (s.status === "CLOSED") {
+    const r = el("button", "btn btn-secondary", "Reopen");
+    r.onclick = () => changeStatus(s.id, "ACTIVE");
+    actions.append(r);
+  }
+
+  const del = el("button", "btn btn-danger", "Delete");
+  del.onclick = () => confirmDelete(s.id, s.title);
+  actions.append(del);
+
+  body.append(actions);
+  card.append(body);
+  return card;
+}
+
+async function changeStatus(id, next) {
+  try {
+    await updateDoc(doc(db, "services", id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    const s = allServices.find(x => x.id === id);
+    if (s) s.status = next;
+    toast("Service marked as " + next.toLowerCase() + ".");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+async function confirmDelete(id, title) {
+  const ok = confirm('Delete "' + title + '"? This cannot be undone.');
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "services", id));
+    // Best-effort decrement of listingCount.
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        listingCount: increment(-1)
+      });
+    } catch (e) { console.warn(e); }
+
+    allServices = allServices.filter(x => x.id !== id);
+    toast("Service deleted.");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Transaction | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide" id="txRoot">
+  <p class="empty">Loading transaction...</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, serverTimestamp, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("txRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDateTime = ts => {
+  if (!ts) return "—";
+  try {
+    return ts.toDate().toLocaleString("en-PH", {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit"
+    });
+  } catch { return "—"; }
+};
+
+const params = new URLSearchParams(location.search);
+const txId = params.get("id");
+
+let currentUser = null;
+let tx = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (!txId) {
+    root.replaceChildren(el("p", "empty", "No transaction specified."));
+    return;
+  }
+  await loadTransaction();
+});
+
+async function loadTransaction() {
+  try {
+    const snap = await getDoc(doc(db, "transactions", txId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This transaction no longer exists."));
+      return;
+    }
+    tx = { id: snap.id, ...snap.data() };
+
+    // Access control — only buyer or seller can view.
+    if (tx.buyerId !== currentUser.uid && tx.sellerId !== currentUser.uid) {
+      root.replaceChildren(el("p", "empty", "You don't have access to this transaction."));
+      return;
+    }
+
+    render();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function render() {
+  const isBuyer = tx.buyerId === currentUser.uid;
+  const isSeller = tx.sellerId === currentUser.uid;
+
+  const wrap = el("div", "product-wrap");
+
+  // ----- Left column -----
+  const left = el("div", "product-left");
+
+  const hero = el("div", "tx-hero");
+  hero.append(el("span", "tx-hero-role", isBuyer ? "You are buying" : "You are selling"));
+  hero.append(el("span", "status-tag " + (tx.status || "PENDING"), tx.status || "PENDING"));
+  left.append(hero);
+
+  left.append(el("h1", "", tx.listingTitle || "Listing"));
+
+  const price = el("p", "product-price", peso(tx.listingPrice));
+  left.append(price);
+
+  // Parties
+  left.append(el("h2", "product-sec-title", "Parties"));
+  const parties = el("ul", "product-details");
+  [
+    ["Buyer", tx.buyerName || "Student" + (isBuyer ? " (you)" : "")],
+    ["Seller", tx.sellerName || "Student" + (isSeller ? " (you)" : "")]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", v));
+    parties.append(li);
+  });
+  left.append(parties);
+
+  // Buyer's message
+  if (tx.message) {
+    left.append(el("h2", "product-sec-title", "Message from buyer"));
+    left.append(el("p", "product-desc", tx.message));
+  }
+
+  // Timeline
+  left.append(el("h2", "product-sec-title", "Timeline"));
+  const timeline = el("ul", "product-details");
+  [
+    ["Requested", fmtDateTime(tx.createdAt)],
+    ["Last updated", fmtDateTime(tx.updatedAt || tx.createdAt)]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", String(v)));
+    timeline.append(li);
+  });
+  left.append(timeline);
+
+  // ----- Right column: actions -----
+  const right = el("aside", "product-right");
+
+  // Status explanation
+  const statusBox = el("div", "seller-box");
+  statusBox.append(el("h3", "", "Status"));
+  statusBox.append(el("p", "tx-status-text", statusText(tx.status)));
+  right.append(statusBox);
+
+  // Actions
+  const actions = el("div", "product-actions");
+
+  // View listing link (works for both)
+  const view = el("a", "btn btn-outline", "View listing");
+  view.href = "../marketplace/product.html?id=" + tx.listingId;
+  actions.append(view);
+
+  const otherUid = isBuyer ? tx.sellerId : tx.buyerId;
+  const msg = el("a", "btn btn-secondary", "Message " + (isBuyer ? "seller" : "buyer"));
+  msg.href = "../social/chat.html?to=" + otherUid + "&listing=" + tx.listingId;
+  actions.append(msg);
+
+  // Role-specific actions
+  if (isBuyer && tx.status === "PENDING") {
+    const c = el("button", "btn btn-danger", "Cancel request");
+    c.onclick = () => changeStatus("CANCELLED");
+    actions.append(c);
+  }
+
+  if (isSeller && tx.status === "PENDING") {
+    const a = el("button", "btn btn-primary", "Accept request");
+    a.onclick = () => changeStatus("ACCEPTED");
+    actions.append(a);
+
+    const d = el("button", "btn btn-danger", "Decline request");
+    d.onclick = () => changeStatus("CANCELLED");
+    actions.append(d);
+  }
+
+  if (tx.status === "ACCEPTED") {
+    const c = el("button", "btn btn-primary", "Mark as completed");
+    c.onclick = () => changeStatus("COMPLETED");
+    actions.append(c);
+  }
+
+  // Review button — only after completed.
+  // Both buyer and seller can review.
+  if (tx.status === "COMPLETED") {
+    const rev = el("a", "btn btn-primary", "Leave a review");
+    rev.href = "../social/review.html?tx=" + tx.id;
+    actions.append(rev);
+  }
+
+  right.append(actions);
+
+  const note = el("p", "product-note", "STUDX does not process payments. Meet in a public campus location. Never share bank details or personal contact info through the platform.");
+  right.append(note);
+
+  wrap.append(left, right);
+  root.replaceChildren(wrap);
+}
+
+function statusText(s) {
+  switch (s) {
+    case "PENDING":   return "Waiting for the seller to accept or decline this request.";
+    case "ACCEPTED":  return "Accepted. Arrange the meetup through messages (coming soon).";
+    case "COMPLETED": return "This transaction is complete. Ratings will be enabled in a later phase.";
+    case "CANCELLED": return "This transaction was cancelled.";
+    default:          return "";
+  }
+}
+
+async function changeStatus(next) {
+  try {
+    await updateDoc(doc(db, "transactions", tx.id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    tx.status = next;
+    tx.updatedAt = { toDate: () => new Date() };
+
+    // Increment completedTransactions for both parties when completed.
+    if (next === "COMPLETED") {
+      try {
+        await updateDoc(doc(db, "users", tx.buyerId), { completedTransactions: increment(1) });
+        await updateDoc(doc(db, "users", tx.sellerId), { completedTransactions: increment(1) });
+      } catch (e) { console.warn("Could not update completedTransactions:", e); }
+    }
+
+    toast("Transaction marked as " + next.toLowerCase() + ".");
+    render();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

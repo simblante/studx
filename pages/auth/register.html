@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Join STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+<main class="page">
+  <h1>Join STUDX</h1>
+  <p class="sub">Create your student account. We'll send a verification link to your school email.</p>
+  <form id="regForm" novalidate>
+
+    <!-- 1. School with autocomplete -->
+    <div class="field autocomplete-field">
+      <label for="school">School / University</label>
+      <input id="school" autocomplete="off" placeholder="Start typing your school name...">
+      <div id="schoolSuggestions" class="autocomplete-list" role="listbox"></div>
+      <small>Choose your school first.</small>
+    </div>
+
+    <!-- 2. Campus with autocomplete (depends on school) -->
+    <div class="field autocomplete-field">
+      <label for="campus">Campus</label>
+      <input id="campus" autocomplete="off" placeholder="Choose the school first">
+      <div id="campusSuggestions" class="autocomplete-list" role="listbox"></div>
+      <small>Choose the school first to see campuses.</small>
+    </div>
+
+    <!-- 3. Email — username + auto-suffix -->
+    <div class="field">
+      <label for="emailUsername">School email</label>
+      <div class="email-row">
+        <input id="emailUsername" autocomplete="off" placeholder="yourname">
+        <span class="email-suffix" id="emailSuffix">@school.edu.ph</span>
+      </div>
+      <small id="emailHint">Choose your school first to set the email domain.</small>
+    </div>
+
+    <!-- 4. Student ID -->
+    <div class="field">
+      <label for="studentId">Student ID</label>
+      <input id="studentId">
+      <small>Only admins can see this. It is never shown on your profile.</small>
+    </div>
+
+    <!-- 5. Full name -->
+    <div class="field">
+      <label for="fullName">Full name</label>
+      <input id="fullName" autocomplete="name">
+    </div>
+
+    <!-- 6. Password -->
+    <div class="field">
+      <label for="password">Password</label>
+      <div class="password-wrap">
+        <input id="password" type="password" autocomplete="new-password">
+        <button type="button" class="password-toggle" data-target="password" aria-label="Show password">
+          <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+            <line x1="1" y1="1" x2="23" y2="23"></line>
+          </svg>
+        </button>
+      </div>
+      <small>At least 8 characters.</small>
+    </div>
+
+    <!-- 7. Confirm password -->
+    <div class="field">
+      <label for="confirm">Confirm password</label>
+      <div class="password-wrap">
+        <input id="confirm" type="password" autocomplete="new-password">
+        <button type="button" class="password-toggle" data-target="confirm" aria-label="Show password">
+          <svg class="icon-eye" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <svg class="icon-eye-off" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+            <line x1="1" y1="1" x2="23" y2="23"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <button class="btn btn-primary btn-lg" type="submit">Create account</button>
+  </form>
+  <p class="alt-link">Already have an account? <a href="login.html">Log in</a></p>
+</main>
+
+<script type="module">
+import { renderHeader, handleSubmit } from "../../js/ui.js";
+import { registerStudent } from "../../js/auth.js";
+import { SCHOOLS } from "../../js/schools.js";
+import {
+  validatePassword, validateConfirmPassword,
+  validateCampus
+} from "../../js/validate.js";
+
+renderHeader();
+
+// ---------- Autocomplete helpers ----------
+const schoolInput = document.getElementById("school");
+const schoolSuggestions = document.getElementById("schoolSuggestions");
+const campusInput = document.getElementById("campus");
+const campusSuggestions = document.getElementById("campusSuggestions");
+const emailUsername = document.getElementById("emailUsername");
+const emailSuffix = document.getElementById("emailSuffix");
+const emailHint = document.getElementById("emailHint");
+
+function findSchoolByName(name) {
+  return SCHOOLS.find(s => s.name === name) || null;
+}
+
+function filterSchools(query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return SCHOOLS.slice(0, 8);
+  return SCHOOLS.filter(s =>
+    s.name.toLowerCase().includes(q) ||
+    s.shortNames.some(sn => sn.toLowerCase().includes(q) || q.includes(sn.toLowerCase()))
+  ).slice(0, 8);
+}
+
+function renderSuggestions(listEl, items, onPick) {
+  listEl.replaceChildren();
+  if (items.length === 0) {
+    listEl.classList.remove("open");
+    return;
+  }
+  items.forEach(item => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "autocomplete-item";
+    row.textContent = item;
+    row.onclick = () => {
+      onPick(item);
+      listEl.classList.remove("open");
+    };
+    listEl.append(row);
+  });
+  listEl.classList.add("open");
+}
+
+// ----- School autocomplete -----
+schoolInput.addEventListener("input", () => {
+  const matches = filterSchools(schoolInput.value);
+  renderSuggestions(schoolSuggestions, matches.map(s => s.name), (picked) => {
+    schoolInput.value = picked;
+    updateSchoolDependents(picked);
+  });
+});
+
+schoolInput.addEventListener("focus", () => {
+  const matches = filterSchools(schoolInput.value);
+  renderSuggestions(schoolSuggestions, matches.map(s => s.name), (picked) => {
+    schoolInput.value = picked;
+    updateSchoolDependents(picked);
+  });
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".autocomplete-field")) {
+    schoolSuggestions.classList.remove("open");
+    campusSuggestions.classList.remove("open");
+  }
+});
+
+// ----- Campus autocomplete -----
+function updateCampusOptions(schoolName) {
+  const school = findSchoolByName(schoolName);
+  if (!school) return;
+  if (school.campuses.length === 1) {
+    campusInput.value = school.campuses[0];
+  } else {
+    campusInput.value = "";
+  }
+}
+
+campusInput.addEventListener("input", () => {
+  const school = findSchoolByName(schoolInput.value);
+  if (!school) {
+    renderSuggestions(campusSuggestions, [], () => {});
+    return;
+  }
+  const q = campusInput.value.toLowerCase();
+  const matches = school.campuses.filter(c => c.toLowerCase().includes(q)).slice(0, 8);
+  renderSuggestions(campusSuggestions, matches, (picked) => {
+    campusInput.value = picked;
+  });
+});
+
+campusInput.addEventListener("focus", () => {
+  const school = findSchoolByName(schoolInput.value);
+  if (!school) return;
+  const q = campusInput.value.toLowerCase();
+  const matches = school.campuses.filter(c => c.toLowerCase().includes(q)).slice(0, 8);
+  renderSuggestions(campusSuggestions, matches, (picked) => {
+    campusInput.value = picked;
+  });
+});
+
+// ---------- When school is picked, update campus AND email suffix ----------
+function updateSchoolDependents(schoolName) {
+  const school = findSchoolByName(schoolName);
+  if (!school) {
+    emailSuffix.textContent = "@school.edu.ph";
+    emailHint.textContent = "Choose your school first to set the email domain.";
+    emailHint.classList.add("hint-warn");
+    return;
+  }
+
+  // Campus
+  updateCampusOptions(schoolName);
+
+  // Email suffix
+  emailSuffix.textContent = school.emailSuffix;
+  emailHint.textContent = "Your email will be: " + (emailUsername.value || "yourname") + school.emailSuffix;
+  emailHint.classList.remove("hint-warn");
+}
+
+// Update the email hint as the user types the username.
+emailUsername.addEventListener("input", () => {
+  const school = findSchoolByName(schoolInput.value);
+  const suffix = school ? school.emailSuffix : "@school.edu.ph";
+  emailHint.textContent = "Your email will be: " + (emailUsername.value || "yourname") + suffix;
+});
+
+// ---------- Password visibility toggle ----------
+document.querySelectorAll(".password-toggle").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (!target) return;
+    const showing = target.type === "text";
+    target.type = showing ? "password" : "text";
+    // Toggle the "showing" class — CSS handles which icon is visible.
+    btn.classList.toggle("showing", !showing);
+    btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+  });
+});
+
+// ---------- Submit ----------
+const form = document.getElementById("regForm");
+const val = id => document.getElementById(id).value;
+
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  handleSubmit(form, async () => {
+    const school = val("school");
+    const campus = val("campus");
+    const username = val("emailUsername").trim();
+
+    // Basic checks.
+    if (!school) throw { userMessage: "Please choose your school from the list." };
+    const matched = findSchoolByName(school);
+    if (!matched) throw { userMessage: "Please select your school from the suggestions." };
+    if (!campus) throw { userMessage: "Please choose your campus." };
+    const campusProblem = validateCampus(campus);
+    if (campusProblem) throw { userMessage: campusProblem };
+
+    if (!username) throw { userMessage: "Please enter your email username." };
+    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+      throw { userMessage: "Email username can only contain letters, numbers, dots, dashes, and underscores." };
+    }
+
+    const email = (username + matched.emailSuffix).toLowerCase();
+
+    const v = {
+      fullName: val("fullName"),
+      email,
+      studentId: val("studentId"),
+      school: matched.name,
+      campus,
+      password: val("password"),
+      confirm: val("confirm")
+    };
+
+    // Remaining validation.
+    const problem =
+      (!v.fullName || !v.studentId ? "Please fill in every field." : null) ||
+      validatePassword(v.password) ||
+      validateConfirmPassword(v.password, v.confirm);
+
+    if (problem) throw { userMessage: problem };
+
+    await registerStudent(v);
+    location.href = "verified.html";
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Transactions | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Transactions</h1>
+      <p class="sub">Track your buy requests and sales on STUDX.</p>
+    </div>
+  </div>
+
+  <!-- Role tabs: Buying / Selling -->
+  <div class="tab-bar" id="roleBar">
+    <button class="tab active" data-role="buying">Buying</button>
+    <button class="tab" data-role="selling">Selling</button>
+  </div>
+
+  <!-- Status filter tabs -->
+  <div class="tab-bar small" id="statusBar">
+    <button class="tab active" data-status="ALL">All</button>
+    <button class="tab" data-status="PENDING">Pending</button>
+    <button class="tab" data-status="ACCEPTED">Accepted</button>
+    <button class="tab" data-status="COMPLETED">Completed</button>
+    <button class="tab" data-status="CANCELLED">Cancelled</button>
+  </div>
+
+  <div id="txRoot">
+    <p class="empty">Loading transactions...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs,
+  doc, updateDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const txRoot = document.getElementById("txRoot");
+const roleBar = document.getElementById("roleBar");
+const statusBar = document.getElementById("statusBar");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+let currentUser = null;
+let buyingTxs = [];
+let sellingTxs = [];
+let activeRole = "buying";
+let activeStatus = "ALL";
+
+// Role tabs
+roleBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  roleBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeRole = btn.dataset.role;
+  renderList();
+});
+
+// Status tabs
+statusBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  statusBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeStatus = btn.dataset.status;
+  renderList();
+});
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  await loadTransactions();
+});
+
+async function loadTransactions() {
+  try {
+    // Two separate queries — one as buyer, one as seller.
+    // Each uses a single equality filter → no composite index needed.
+    const [buySnap, sellSnap] = await Promise.all([
+      getDocs(query(collection(db, "transactions"), where("buyerId", "==", currentUser.uid))),
+      getDocs(query(collection(db, "transactions"), where("sellerId", "==", currentUser.uid)))
+    ]);
+
+    buyingTxs = [];
+    sellingTxs = [];
+    buySnap.forEach(d => buyingTxs.push({ id: d.id, ...d.data() }));
+    sellSnap.forEach(d => sellingTxs.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc — avoids index requirements.
+    const byDate = (a, b) =>
+      (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
+    buyingTxs.sort(byDate);
+    sellingTxs.sort(byDate);
+
+    renderList();
+  } catch (err) {
+    txRoot.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderList() {
+  const source = activeRole === "buying" ? buyingTxs : sellingTxs;
+  const filtered = activeStatus === "ALL"
+    ? source
+    : source.filter(t => t.status === activeStatus);
+
+  if (filtered.length === 0) {
+    txRoot.replaceChildren(buildEmpty());
+    return;
+  }
+
+  const grid = el("div", "tx-grid");
+  filtered.forEach(t => grid.append(buildCard(t)));
+  txRoot.replaceChildren(grid);
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  const msg = activeRole === "buying"
+    ? (activeStatus === "ALL" ? "You haven't requested to buy anything yet." : "No " + activeStatus.toLowerCase() + " purchases.")
+    : (activeStatus === "ALL" ? "Nobody has requested to buy your listings yet." : "No " + activeStatus.toLowerCase() + " sales.");
+  box.append(el("p", "", msg));
+  if (activeRole === "buying") {
+    const a = el("a", "btn btn-primary", "Browse marketplace");
+    a.href = "../marketplace/marketplace.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+  return box;
+}
+
+function buildCard(t) {
+  const card = el("article", "tx-card");
+
+  const head = el("div", "tx-head");
+  head.append(el("span", "tx-role", activeRole === "buying" ? "You are buying" : "You are selling"));
+  head.append(el("span", "status-tag " + (t.status || "PENDING"), t.status || "PENDING"));
+  card.append(head);
+
+  const body = el("div", "tx-body");
+  body.append(el("h3", "tx-title", t.listingTitle || "Listing"));
+  body.append(el("p", "tx-price", peso(t.listingPrice)));
+
+  const other = activeRole === "buying"
+    ? "Seller: " + (t.sellerName || "Student")
+    : "Buyer: " + (t.buyerName || "Student");
+  body.append(el("p", "tx-other", other));
+
+  if (t.message) {
+    const msgBox = el("p", "tx-message");
+    msgBox.textContent = '“' + t.message + '”';
+    body.append(msgBox);
+  }
+
+  body.append(el("p", "tx-date", "Requested " + fmtDate(t.createdAt)));
+
+  // Actions
+  const actions = el("div", "tx-actions");
+
+  const view = el("a", "btn btn-outline", "View");
+  view.href = "transaction.html?id=" + t.id;
+  actions.append(view);
+
+  if (activeRole === "buying") {
+    if (t.status === "PENDING") {
+      const c = el("button", "btn btn-danger", "Cancel request");
+      c.onclick = () => changeStatus(t.id, "CANCELLED", buyingTxs);
+      actions.append(c);
+    }
+    if (t.status === "ACCEPTED") {
+      const d = el("button", "btn btn-primary", "Mark completed");
+      d.onclick = () => changeStatus(t.id, "COMPLETED", buyingTxs);
+      actions.append(d);
+    }
+  } else {
+    if (t.status === "PENDING") {
+      const a = el("button", "btn btn-primary", "Accept");
+      a.onclick = () => changeStatus(t.id, "ACCEPTED", sellingTxs);
+      actions.append(a);
+
+      const d = el("button", "btn btn-danger", "Decline");
+      d.onclick = () => changeStatus(t.id, "CANCELLED", sellingTxs);
+      actions.append(d);
+    }
+    if (t.status === "ACCEPTED") {
+      const d = el("button", "btn btn-primary", "Mark completed");
+      d.onclick = () => changeStatus(t.id, "COMPLETED", sellingTxs);
+      actions.append(d);
+    }
+  }
+
+  body.append(actions);
+  card.append(body);
+  return card;
+}
+
+async function changeStatus(id, next, source) {
+  try {
+    await updateDoc(doc(db, "transactions", id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    const t = source.find(x => x.id === id);
+    if (t) t.status = next;
+    toast("Transaction marked as " + next.toLowerCase() + ".");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

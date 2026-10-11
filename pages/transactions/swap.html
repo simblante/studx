@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Swap request | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide" id="swapRoot">
+  <p class="empty">Loading swap request...</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("swapRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtDateTime = ts => {
+  if (!ts) return "—";
+  try {
+    return ts.toDate().toLocaleString("en-PH", {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit"
+    });
+  } catch { return "—"; }
+};
+
+const params = new URLSearchParams(location.search);
+const swapId = params.get("id");
+
+let currentUser = null;
+let swap = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (!swapId) {
+    root.replaceChildren(el("p", "empty", "No swap request specified."));
+    return;
+  }
+  await loadSwap();
+});
+
+async function loadSwap() {
+  try {
+    const snap = await getDoc(doc(db, "swapRequests", swapId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This swap request no longer exists."));
+      return;
+    }
+    swap = { id: snap.id, ...snap.data() };
+
+    // Access control — only requester or owner can view.
+    if (swap.requesterId !== currentUser.uid && swap.ownerId !== currentUser.uid) {
+      root.replaceChildren(el("p", "empty", "You don't have access to this swap request."));
+      return;
+    }
+
+    render();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function render() {
+  const isRequester = swap.requesterId === currentUser.uid;
+  const isOwner = swap.ownerId === currentUser.uid;
+
+  const wrap = el("div", "product-wrap");
+
+  // ----- Left column -----
+  const left = el("div", "product-left");
+
+  const hero = el("div", "tx-hero");
+  hero.append(el("span", "tx-hero-role", isRequester ? "You requested this swap" : "Someone wants to swap with you"));
+  hero.append(el("span", "status-tag " + (swap.status || "PENDING"), swap.status || "PENDING"));
+  left.append(hero);
+
+  left.append(el("h1", "", "Swap request"));
+
+  // Two-column preview
+  const previewBox = el("div", "swap-preview");
+  const wantCol = el("div", "swap-preview-col");
+  wantCol.append(el("span", "swap-preview-label", isRequester ? "You want" : "They want"));
+  wantCol.append(el("p", "swap-preview-title", swap.wantedTitle || "Listing"));
+  const viewWant = el("a", "btn btn-outline", "View listing");
+  viewWant.href = "../marketplace/product.html?id=" + swap.wantedListingId;
+  viewWant.style.marginTop = "8px";
+  wantCol.append(viewWant);
+
+  const arrow = el("div", "swap-preview-arrow", "⇄");
+
+  const offerCol = el("div", "swap-preview-col");
+  offerCol.append(el("span", "swap-preview-label", isRequester ? "You offer" : "They offer"));
+  offerCol.append(el("p", "swap-preview-title", swap.offeredTitle || "Listing"));
+  const viewOffer = el("a", "btn btn-outline", "View listing");
+  viewOffer.href = "../marketplace/product.html?id=" + swap.offeredListingId;
+  viewOffer.style.marginTop = "8px";
+  offerCol.append(viewOffer);
+
+  previewBox.append(wantCol, arrow, offerCol);
+  left.append(previewBox);
+
+  // Parties
+  left.append(el("h2", "product-sec-title", "Parties"));
+  const parties = el("ul", "product-details");
+  [
+    ["Requester", swap.requesterName || "Student" + (isRequester ? " (you)" : "")],
+    ["Owner", swap.ownerName || "Student" + (isOwner ? " (you)" : "")]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", v));
+    parties.append(li);
+  });
+  left.append(parties);
+
+  // Message
+  if (swap.message) {
+    left.append(el("h2", "product-sec-title", "Message from requester"));
+    left.append(el("p", "product-desc", swap.message));
+  }
+
+  // Timeline
+  left.append(el("h2", "product-sec-title", "Timeline"));
+  const timeline = el("ul", "product-details");
+  [
+    ["Requested", fmtDateTime(swap.createdAt)],
+    ["Last updated", fmtDateTime(swap.updatedAt || swap.createdAt)]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", String(v)));
+    timeline.append(li);
+  });
+  left.append(timeline);
+
+  // ----- Right column: status + actions -----
+  const right = el("aside", "product-right");
+
+  const statusBox = el("div", "seller-box");
+  statusBox.append(el("h3", "", "Status"));
+  statusBox.append(el("p", "tx-status-text", statusText(swap.status)));
+  right.append(statusBox);
+
+  // Actions
+  const actions = el("div", "product-actions");
+
+  // Message button — links to chat with the other party.
+  const otherUid = isRequester ? swap.ownerId : swap.requesterId;
+  const otherLabel = isRequester ? "owner" : "requester";
+  const msg = el("a", "btn btn-secondary", "Message " + otherLabel);
+  msg.href = "../social/chat.html?to=" + otherUid + "&listing=" + swap.wantedListingId;
+  actions.append(msg);
+
+  // Role-specific actions
+  if (isOwner && swap.status === "PENDING") {
+    const a = el("button", "btn btn-primary", "Accept swap");
+    a.onclick = () => changeStatus("ACCEPTED");
+    actions.append(a);
+
+    const d = el("button", "btn btn-danger", "Decline swap");
+    d.onclick = () => changeStatus("DECLINED");
+    actions.append(d);
+  }
+
+  if (isRequester && swap.status === "PENDING") {
+    const c = el("button", "btn btn-danger", "Cancel request");
+    c.onclick = () => changeStatus("DECLINED");
+    actions.append(c);
+  }
+
+  if (swap.status === "ACCEPTED") {
+    const c = el("button", "btn btn-primary", "Mark as completed");
+    c.onclick = () => changeStatus("COMPLETED");
+    actions.append(c);
+  }
+
+  // Review button — only after completed.
+  if (swap.status === "COMPLETED") {
+    const rev = el("a", "btn btn-primary", "Leave a review");
+    rev.href = "../social/review.html?swap=" + swap.id;
+    actions.append(rev);
+  }
+
+  right.append(actions);
+
+  // Safety note
+  const note = el("p", "product-note", "STUDX does not handle the swap exchange. Arrange the meetup through messages, inspect both items, and meet in a public campus location.");
+  right.append(note);
+
+  wrap.append(left, right);
+  root.replaceChildren(wrap);
+}
+
+function statusText(s) {
+  switch (s) {
+    case "PENDING":   return "Waiting for the owner to accept or decline.";
+    case "ACCEPTED":  return "Accepted. Arrange the meetup through messages, then mark as completed once you both exchange items.";
+    case "DECLINED":  return "This swap request was declined or cancelled.";
+    case "COMPLETED": return "This swap is complete.";
+    default:          return "";
+  }
+}
+
+async function changeStatus(next) {
+  try {
+    await updateDoc(doc(db, "swapRequests", swap.id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    swap.status = next;
+    swap.updatedAt = { toDate: () => new Date() };
+    toast("Swap marked as " + next.toLowerCase() + ".");
+    render();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

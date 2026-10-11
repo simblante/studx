@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Verify your email | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <h1>Verify your email</h1>
+  <p class="sub">We sent a verification link to your school email. Click the link to activate your account.</p>
+
+  <div class="notice warn">
+    <b>Important:</b> Check your <b>inbox</b> and <b>spam folder</b>. The verification email sometimes lands in spam, especially for school emails.
+  </div>
+
+  <div class="verify-box">
+    <p class="verify-email" id="emailDisplay">Loading...</p>
+    <p class="verify-note">This is the email you registered with. If it's wrong, sign out and register again.</p>
+  </div>
+
+  <div class="verify-actions">
+    <button class="btn btn-primary btn-lg" id="resendBtn" type="button">Resend verification email</button>
+    <button class="btn btn-secondary" id="checkBtn" type="button">I already clicked the link</button>
+    <button class="btn btn-ghost verify-signout" id="signoutBtn" type="button">Sign out</button>
+  </div>
+
+  <p class="alt-link">Need help? Contact support.</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged, sendEmailVerification } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { doc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+import { logout } from "../../js/auth.js";
+
+renderHeader();
+
+const emailDisplay = document.getElementById("emailDisplay");
+const resendBtn = document.getElementById("resendBtn");
+const checkBtn = document.getElementById("checkBtn");
+const signoutBtn = document.getElementById("signoutBtn");
+
+let currentUser = null;
+let checkInterval = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) {
+    // No user — go back to login (same folder).
+    location.replace("login.html");
+    return;
+  }
+  currentUser = user;
+
+  // If already verified, go straight to profile (and mark VERIFIED).
+  if (user.emailVerified) {
+    await markVerified(user);
+    return;
+  }
+
+  // Show the email the user registered with.
+  emailDisplay.textContent = user.email || "—";
+
+  // Auto-check verification status every 2 seconds.
+  startAutoCheck(user);
+});
+
+// ---------- Auto-check loop ----------
+function startAutoCheck(user) {
+  if (checkInterval) clearInterval(checkInterval);
+  checkInterval = setInterval(async () => {
+    try {
+      await user.reload();
+      if (user.emailVerified) {
+        clearInterval(checkInterval);
+        checkInterval = null;
+        await markVerified(user);
+      }
+    } catch (e) {
+      // Ignore — probably network hiccup. Keep trying.
+    }
+  }, 2000);
+}
+
+// ---------- Mark the user as VERIFIED in Firestore, then redirect ----------
+async function markVerified(user) {
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    if (snap.exists()) {
+      const data = snap.data();
+      // Only upgrade from PENDING. Never touch REJECTED.
+      if (data.verificationStatus === "PENDING") {
+        await updateDoc(doc(db, "users", user.uid), {
+          verificationStatus: "VERIFIED"
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Could not update verificationStatus:", e);
+    // Continue anyway — the profile page will show the email-verified state.
+  }
+  // Redirect to profile (one level up from pages/auth/).
+  location.replace("../profile.html");
+}
+
+// ---------- Resend button ----------
+resendBtn.addEventListener("click", async () => {
+  if (!currentUser) return;
+  resendBtn.disabled = true;
+  const originalLabel = resendBtn.textContent;
+  resendBtn.textContent = "Sending...";
+  try {
+    await sendEmailVerification(currentUser);
+    toast("Verification email sent. Check your inbox and spam folder.");
+  } catch (err) {
+    toast(friendlyError(err));
+  } finally {
+    resendBtn.disabled = false;
+    resendBtn.textContent = originalLabel;
+  }
+});
+
+// ---------- Manual check button ----------
+checkBtn.addEventListener("click", async () => {
+  if (!currentUser) return;
+  checkBtn.disabled = true;
+  const originalLabel = checkBtn.textContent;
+  checkBtn.textContent = "Checking...";
+  try {
+    await currentUser.reload();
+    if (currentUser.emailVerified) {
+      await markVerified(currentUser);
+    } else {
+      toast("Not verified yet. Please check your email (and spam folder).");
+    }
+  } catch (err) {
+    toast(friendlyError(err));
+  } finally {
+    checkBtn.disabled = false;
+    checkBtn.textContent = originalLabel;
+  }
+});
+
+// ---------- Sign out ----------
+signoutBtn.addEventListener("click", async () => {
+  if (checkInterval) clearInterval(checkInterval);
+  await logout();
+  // Go back to root index.html.
+  location.href = "../../index.html";
+});
+</script>
+</body>
+</html>

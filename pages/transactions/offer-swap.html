@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Offer a swap | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <div id="swapRoot">
+    <p class="empty">Loading listing...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, collection, query, where, getDocs, addDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("swapRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+const params = new URLSearchParams(location.search);
+const wantedId = params.get("id");
+
+let currentUser = null;
+let wantedListing = null;   // the listing we want from the other student
+let myListings = [];        // my swap-eligible listings
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (!wantedId) {
+    root.replaceChildren(el("p", "empty", "No listing specified."));
+    return;
+  }
+  await load();
+});
+
+async function load() {
+  try {
+    // 1. Load the wanted listing.
+    const snap = await getDoc(doc(db, "listings", wantedId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This listing no longer exists."));
+      return;
+    }
+    wantedListing = { id: snap.id, ...snap.data() };
+
+    // 2. Cannot swap with yourself.
+    if (wantedListing.sellerId === currentUser.uid) {
+      root.replaceChildren(el("p", "empty", "This is your own listing. You can't offer a swap on it."));
+      return;
+    }
+
+    // 3. Listing must be available + marked for swap.
+    if (wantedListing.status !== "AVAILABLE") {
+      root.replaceChildren(el("p", "empty", "This listing is no longer available."));
+      return;
+    }
+    if (!wantedListing.availableForSwap) {
+      root.replaceChildren(el("p", "empty", "The owner isn't accepting swaps on this listing."));
+      return;
+    }
+
+    // 4. Load my own swap-eligible listings.
+    // Single-equality query on sellerId + status keeps it index-free.
+    // The availableForSwap filter is applied client-side below.
+    const q = query(
+      collection(db, "listings"),
+      where("sellerId", "==", currentUser.uid),
+      where("status", "==", "AVAILABLE")
+    );
+    const mySnap = await getDocs(q);
+    myListings = [];
+    mySnap.forEach(d => {
+      const l = { id: d.id, ...d.data() };
+      if (l.availableForSwap === true) myListings.push(l);
+    });
+
+    renderForm();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderForm() {
+  const wrap = el("div");
+
+  wrap.append(el("h1", "", "Offer a swap"));
+  wrap.append(el("p", "sub", "Trade one of your items for this listing. The owner will accept, decline, or message you back."));
+
+  // --- Wanted listing summary ---
+  const summary = el("div", "request-summary");
+  summary.append(el("h3", "", wantedListing.title));
+  summary.append(el("p", "request-price", peso(wantedListing.price) || "₱0"));
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", wantedListing.condition || "—"));
+  meta.append(el("span", "chip swap", "Swap OK"));
+  meta.append(el("span", "chip", wantedListing.campus || "—"));
+  summary.append(meta);
+  summary.append(el("p", "request-seller", "Owner: " + (wantedListing.sellerName || "Student")));
+  wrap.append(summary);
+
+  // --- Warning if no eligible listings ---
+  if (myListings.length === 0) {
+    const warn = el("div", "notice warn");
+    warn.append(el("b", "", "You have no swap-eligible listings."));
+    warn.append(el("p", "", "To offer a swap, you need at least one AVAILABLE listing marked as \"Available for swap\". Add one first, or edit an existing listing."));
+    const addLink = el("a", "btn btn-primary", "Add a listing");
+    addLink.href = "../marketplace/create-listing.html";
+    addLink.style.marginTop = "10px";
+    warn.append(addLink);
+    wrap.append(warn);
+
+    const back = el("p", "alt-link");
+    const a = el("a", "", "Back to listing");
+    a.href = "../marketplace/product.html?id=" + wantedListing.id;
+    back.append(a);
+    wrap.append(back);
+
+    root.replaceChildren(wrap);
+    return;
+  }
+
+  // --- Form ---
+  const form = el("form");
+  form.id = "swapForm";
+  form.noValidate = true;
+
+  // "I have" dropdown
+  const haveField = el("div", "field");
+  const haveLabel = el("label", "", "I have (your item)");
+  haveLabel.setAttribute("for", "offeredId");
+  haveField.append(haveLabel);
+  const haveSelect = el("select");
+  haveSelect.id = "offeredId";
+  const defaultOpt = el("option", "", "Select one of your listings");
+  defaultOpt.value = "";
+  haveSelect.append(defaultOpt);
+  myListings.forEach(l => {
+    const opt = el("option", "", l.title + " — " + (l.condition || "—"));
+    opt.value = l.id;
+    haveSelect.append(opt);
+  });
+  haveField.append(haveSelect);
+  haveField.append(el("small", "", "Only your AVAILABLE listings marked \"Available for swap\" appear here."));
+  form.append(haveField);
+
+  // Optional message
+  const msgField = el("div", "field");
+  const msgLabel = el("label", "", "Message to owner (optional)");
+  msgLabel.setAttribute("for", "message");
+  msgField.append(msgLabel);
+  const ta = el("textarea");
+  ta.id = "message";
+  ta.maxLength = 400;
+  ta.placeholder = "e.g. Hi! Interested in swapping. My item is in good condition — meet at the library?";
+  msgField.append(ta);
+  msgField.append(el("small", "", "Max 400 characters."));
+  form.append(msgField);
+
+  const notice = el("div", "notice");
+  notice.textContent = "STUDX does not process payments or swaps automatically. Arrange the meetup and exchange directly through messages. Meet in a public campus location.";
+  form.append(notice);
+
+  const formMsg = el("p", "form-msg");
+  formMsg.setAttribute("role", "alert");
+  form.append(formMsg);
+
+  const btn = el("button", "btn btn-primary btn-lg", "Send swap request");
+  btn.type = "submit";
+  form.append(btn);
+
+  wrap.append(form);
+
+  const back = el("p", "alt-link");
+  const a = el("a", "", "Back to listing");
+  a.href = "../marketplace/product.html?id=" + wantedListing.id;
+  back.append(a);
+  wrap.append(back);
+
+  root.replaceChildren(wrap);
+
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    handleSubmit(form, async () => {
+      if (!currentUser || !wantedListing) throw { userMessage: "Please log in first." };
+
+      const offeredId = haveSelect.value;
+      if (!offeredId) throw { userMessage: "Please choose one of your listings to offer." };
+
+      const offered = myListings.find(l => l.id === offeredId);
+      if (!offered) throw { userMessage: "The selected listing could not be found." };
+
+      const message = ta.value.trim();
+      if (message.length > 400) throw { userMessage: "Message is too long (max 400 characters)." };
+
+      await addDoc(collection(db, "swapRequests"), {
+        requesterId: currentUser.uid,
+        requesterName: currentUser.displayName || "Student",
+        ownerId: wantedListing.sellerId,
+        ownerName: wantedListing.sellerName || "Student",
+
+        wantedListingId: wantedListing.id,
+        wantedTitle: wantedListing.title,
+
+        offeredListingId: offered.id,
+        offeredTitle: offered.title,
+
+        message,
+        status: "PENDING",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      toast("Swap request sent.");
+      setTimeout(() => location.href = "../marketplace/product.html?id=" + wantedListing.id, 900);
+    });
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Offer a service | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <h1>Offer a service</h1>
+  <p class="sub">Share a legitimate skill or service with other students. Tutoring, mentoring, design, editing, and technical help are welcome.</p>
+
+  <div class="notice warn">
+    <b>Academic honesty rule.</b> You may NOT offer to do graded work, answer exams, write theses, or complete assignments for another student. Doing so will get your account suspended.
+  </div>
+
+  <form id="serviceForm" novalidate>
+    <div class="field">
+      <label for="title">Service title</label>
+      <input id="title" maxlength="80" placeholder="e.g. Python Tutoring for Beginners">
+      <small>Keep it clear and specific. Max 80 characters.</small>
+    </div>
+
+    <div class="field">
+      <label for="description">Description</label>
+      <textarea id="description" maxlength="600" placeholder="Explain what you will help with, your experience, and how sessions work."></textarea>
+      <small>Max 600 characters.</small>
+    </div>
+
+    <div class="field">
+      <label for="category">Category</label>
+      <select id="category">
+        <option value="">Select a category</option>
+        <option>Programming</option>
+        <option>Creative</option>
+        <option>Academic</option>
+        <option>Other</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="subcategory">Specific service</label>
+      <select id="subcategory">
+        <option value="">Select a specific service</option>
+      </select>
+      <small>Options depend on the category you chose.</small>
+    </div>
+
+    <div class="field">
+      <label for="price">Price (₱)</label>
+      <input id="price" type="number" min="0" step="1" placeholder="e.g. 150">
+    </div>
+
+    <div class="field">
+      <label for="priceUnit">Price is per</label>
+      <select id="priceUnit">
+        <option>Hour</option>
+        <option>Session</option>
+        <option>Project</option>
+        <option>Fixed</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="availability">Availability</label>
+      <input id="availability" maxlength="80" placeholder="e.g. Weekdays 5–8 PM, Weekends">
+      <small>When are you usually available?</small>
+    </div>
+
+    <!-- Image upload field -->
+    <div class="field">
+      <label for="imageInput">Service photo (optional)</label>
+      <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+      <small>JPG, PNG, WEBP, or GIF. Max 5 MB. You can add one photo for now.</small>
+      <div id="imagePreview" class="image-preview"></div>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <button class="btn btn-primary btn-lg" type="submit">Publish service</button>
+  </form>
+
+  <p class="alt-link"><a href="../profile.html">Back to profile</a></p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, collection, addDoc, serverTimestamp, updateDoc, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../../js/ui.js";
+import { validateServiceForm } from "../../js/validate.js";
+import { uploadImage, validateImage } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const form = document.getElementById("serviceForm");
+const val = id => document.getElementById(id).value.trim();
+const categoryEl = document.getElementById("category");
+const subEl = document.getElementById("subcategory");
+const imageInput = document.getElementById("imageInput");
+const imagePreview = document.getElementById("imagePreview");
+
+// Map categories to their allowed subcategories (Section 11 of the master plan).
+const SUBCATEGORIES = {
+  "Programming": ["Python", "Java", "HTML/CSS", "Web Development", "Other Programming"],
+  "Creative":    ["Graphic Design", "Video Editing", "Photography", "Other Creative"],
+  "Academic":    ["Tutoring", "Study Assistance", "Reviewer Preparation", "Other Academic"],
+  "Other":       ["Printing", "Computer Assistance", "Technical Services", "Other"]
+};
+
+// Populate the subcategory dropdown whenever the category changes.
+categoryEl.addEventListener("change", () => {
+  const list = SUBCATEGORIES[categoryEl.value] || [];
+  subEl.innerHTML = '<option value="">Select a specific service</option>';
+  list.forEach(s => {
+    const o = document.createElement("option");
+    o.textContent = s;
+    subEl.append(o);
+  });
+});
+
+let currentUser = null;
+let currentProfile = null;
+let selectedFile = null;   // holds the File object before upload
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    currentProfile = snap.exists() ? snap.data() : null;
+  } catch (err) {
+    console.warn("Could not load profile:", err);
+  }
+});
+
+// ---------- Image picker + preview ----------
+imageInput.addEventListener("change", () => {
+  const file = imageInput.files[0];
+  selectedFile = null;
+  imagePreview.replaceChildren();
+
+  if (!file) return;
+
+  const problem = validateImage(file);
+  if (problem) {
+    const msg = form.querySelector(".form-msg");
+    msg.textContent = problem;
+    msg.className = "form-msg error";
+    imageInput.value = "";
+    return;
+  }
+
+  selectedFile = file;
+
+  // Show a preview of the selected image.
+  const img = document.createElement("img");
+  img.src = URL.createObjectURL(file);
+  img.alt = "Selected service photo";
+  img.className = "image-preview-img";
+  imagePreview.append(img);
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "btn btn-secondary image-remove";
+  removeBtn.textContent = "Remove photo";
+  removeBtn.onclick = () => {
+    selectedFile = null;
+    imageInput.value = "";
+    imagePreview.replaceChildren();
+  };
+  imagePreview.append(removeBtn);
+});
+
+// ---------- Submit ----------
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  handleSubmit(form, async () => {
+    if (!currentUser) throw { userMessage: "Please log in first." };
+
+    const v = {
+      title: val("title"),
+      description: val("description"),
+      category: val("category"),
+      subcategory: val("subcategory"),
+      price: Number(val("price")),
+      priceUnit: val("priceUnit"),
+      availability: val("availability")
+    };
+
+    const problem = validateServiceForm(v);
+    if (problem) throw { userMessage: problem };
+
+    // ---------- Upload image (if any) ----------
+    let imageUrl = "";
+    if (selectedFile) {
+      const uploadResult = await uploadImage(selectedFile);
+      imageUrl = uploadResult.url;
+    }
+
+    // ---------- Save with denormalized provider info ----------
+    await addDoc(collection(db, "services"), {
+      providerId: currentUser.uid,
+      providerName: currentProfile?.fullName || currentUser.displayName || "Student",
+      providerSchool: currentProfile?.school || "",
+      providerCampus: currentProfile?.campus || "",
+      providerVerified: currentProfile?.verificationStatus === "VERIFIED",
+
+      providerRatingAverage: currentProfile?.ratingAverage || 0,
+      providerRatingCount: currentProfile?.ratingCount || 0,
+
+      title: v.title,
+      description: v.description,
+      category: v.category,
+      subcategory: v.subcategory,
+      price: v.price,
+      priceUnit: v.priceUnit,
+      availability: v.availability,
+
+      // Store the Cloudinary URL(s). Array keeps the schema ready for
+      // multiple photos in a future update.
+      images: imageUrl ? [imageUrl] : [],
+
+      status: "ACTIVE",
+      ratingAverage: 0,
+      ratingCount: 0,
+      viewCount: 0,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    // Best-effort provider stats counter.
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        listingCount: increment(1)
+      });
+    } catch (err) { console.warn("Could not update listingCount:", err); }
+
+    toast("Service published.");
+    setTimeout(() => location.href = "../profile.html", 800);
+  });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Swaps | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Swaps</h1>
+      <p class="sub">Trade items with other students — no cash needed.</p>
+    </div>
+  </div>
+
+  <!-- Role tabs: Incoming / Outgoing -->
+  <div class="tab-bar" id="roleBar">
+    <button class="tab active" data-role="incoming">Incoming</button>
+    <button class="tab" data-role="outgoing">Outgoing</button>
+  </div>
+
+  <!-- Status filter tabs -->
+  <div class="tab-bar small" id="statusBar">
+    <button class="tab active" data-status="ALL">All</button>
+    <button class="tab" data-status="PENDING">Pending</button>
+    <button class="tab" data-status="ACCEPTED">Accepted</button>
+    <button class="tab" data-status="DECLINED">Declined</button>
+    <button class="tab" data-status="COMPLETED">Completed</button>
+  </div>
+
+  <div id="swapRoot">
+    <p class="empty">Loading swap requests...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs,
+  doc, updateDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("swapRoot");
+const roleBar = document.getElementById("roleBar");
+const statusBar = document.getElementById("statusBar");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+let currentUser = null;
+let incoming = [];
+let outgoing = [];
+let activeRole = "incoming";
+let activeStatus = "ALL";
+
+roleBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  roleBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeRole = btn.dataset.role;
+  renderList();
+});
+
+statusBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  statusBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeStatus = btn.dataset.status;
+  renderList();
+});
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  await loadSwaps();
+});
+
+async function loadSwaps() {
+  try {
+    // Two separate queries — one as owner (incoming), one as requester (outgoing).
+    const [inSnap, outSnap] = await Promise.all([
+      getDocs(query(collection(db, "swapRequests"), where("ownerId", "==", currentUser.uid))),
+      getDocs(query(collection(db, "swapRequests"), where("requesterId", "==", currentUser.uid)))
+    ]);
+
+    incoming = [];
+    outgoing = [];
+    inSnap.forEach(d => incoming.push({ id: d.id, ...d.data() }));
+    outSnap.forEach(d => outgoing.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc.
+    const byDate = (a, b) =>
+      (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
+    incoming.sort(byDate);
+    outgoing.sort(byDate);
+
+    renderList();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderList() {
+  const source = activeRole === "incoming" ? incoming : outgoing;
+  const filtered = activeStatus === "ALL"
+    ? source
+    : source.filter(s => s.status === activeStatus);
+
+  if (filtered.length === 0) {
+    root.replaceChildren(buildEmpty());
+    return;
+  }
+
+  const grid = el("div", "tx-grid");
+  filtered.forEach(s => grid.append(buildCard(s)));
+  root.replaceChildren(grid);
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  const msg = activeRole === "incoming"
+    ? (activeStatus === "ALL" ? "No swap requests received yet." : "No " + activeStatus.toLowerCase() + " incoming swaps.")
+    : (activeStatus === "ALL" ? "You haven't offered any swaps yet." : "No " + activeStatus.toLowerCase() + " outgoing swaps.");
+  box.append(el("p", "", msg));
+  if (activeRole === "outgoing") {
+    const a = el("a", "btn btn-primary", "Browse swap-eligible listings");
+    a.href = "../marketplace/marketplace.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+  return box;
+}
+
+function buildCard(s) {
+  const card = el("article", "tx-card");
+
+  const head = el("div", "tx-head");
+  head.append(el("span", "tx-role", activeRole === "incoming" ? "Incoming swap" : "Outgoing swap"));
+  head.append(el("span", "status-tag " + (s.status || "PENDING"), s.status || "PENDING"));
+  card.append(head);
+
+  const body = el("div", "tx-body");
+
+  // Two-column swap preview
+  const swapRow = el("div", "swap-row");
+
+  const wantCol = el("div", "swap-col");
+  wantCol.append(el("span", "swap-col-label", activeRole === "incoming" ? "They want" : "You want"));
+  wantCol.append(el("p", "swap-col-title", s.wantedTitle || "Listing"));
+
+  const arrow = el("div", "swap-arrow", "⇄");
+
+  const offerCol = el("div", "swap-col");
+  offerCol.append(el("span", "swap-col-label", activeRole === "incoming" ? "They offer" : "You offer"));
+  offerCol.append(el("p", "swap-col-title", s.offeredTitle || "Listing"));
+
+  swapRow.append(wantCol, arrow, offerCol);
+  body.append(swapRow);
+
+  const other = activeRole === "incoming"
+    ? "From: " + (s.requesterName || "Student")
+    : "To: " + (s.ownerName || "Student");
+  body.append(el("p", "tx-other", other));
+
+  if (s.message) {
+    const msgBox = el("p", "tx-message");
+    msgBox.textContent = '“' + s.message + '”';
+    body.append(msgBox);
+  }
+
+  body.append(el("p", "tx-date", "Requested " + fmtDate(s.createdAt)));
+
+  // Actions
+  const actions = el("div", "tx-actions");
+
+  const view = el("a", "btn btn-outline", "View");
+  view.href = "swap.html?id=" + s.id;
+  actions.append(view);
+
+  if (activeRole === "incoming") {
+    if (s.status === "PENDING") {
+      const a = el("button", "btn btn-primary", "Accept");
+      a.onclick = () => changeStatus(s.id, "ACCEPTED", incoming);
+      actions.append(a);
+      const d = el("button", "btn btn-danger", "Decline");
+      d.onclick = () => changeStatus(s.id, "DECLINED", incoming);
+      actions.append(d);
+    }
+    if (s.status === "ACCEPTED") {
+      const c = el("button", "btn btn-primary", "Mark completed");
+      c.onclick = () => changeStatus(s.id, "COMPLETED", incoming);
+      actions.append(c);
+    }
+  } else {
+    if (s.status === "PENDING") {
+      const c = el("button", "btn btn-danger", "Cancel request");
+      c.onclick = () => changeStatus(s.id, "DECLINED", outgoing);
+      actions.append(c);
+    }
+    if (s.status === "ACCEPTED") {
+      const c = el("button", "btn btn-primary", "Mark completed");
+      c.onclick = () => changeStatus(s.id, "COMPLETED", outgoing);
+      actions.append(c);
+    }
+  }
+
+  body.append(actions);
+  card.append(body);
+  return card;
+}
+
+async function changeStatus(id, next, source) {
+  try {
+    await updateDoc(doc(db, "swapRequests", id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    const s = source.find(x => x.id === id);
+    if (s) s.status = next;
+    toast("Swap marked as " + next.toLowerCase() + ".");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

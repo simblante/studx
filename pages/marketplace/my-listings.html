@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>My listings | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>My listings</h1>
+      <p class="sub">Manage everything you have posted on STUDX.</p>
+    </div>
+    <a class="btn btn-primary" href="create-listing.html">+ Add listing</a>
+  </div>
+
+  <div class="tab-bar" id="tabBar">
+    <button class="tab active" data-filter="ALL">All</button>
+    <button class="tab" data-filter="AVAILABLE">Available</button>
+    <button class="tab" data-filter="RESERVED">Reserved</button>
+    <button class="tab" data-filter="SOLD">Sold</button>
+  </div>
+
+  <div id="listingsRoot">
+    <p class="empty">Loading your listings...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, orderBy, getDocs,
+  doc, updateDoc, deleteDoc, serverTimestamp, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("listingsRoot");
+const tabBar = document.getElementById("tabBar");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+let currentUser = null;
+let allListings = [];       // cached from Firestore
+let activeFilter = "ALL";   // ALL / AVAILABLE / RESERVED / SOLD
+
+// Tabs: switch the active filter and re-render.
+tabBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  tabBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeFilter = btn.dataset.filter;
+  renderList();
+});
+
+// Route protection + initial load.
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  await loadMyListings();
+});
+
+async function loadMyListings() {
+  try {
+    // Single-field query — no composite index needed.
+    const q = query(
+      collection(db, "listings"),
+      where("sellerId", "==", currentUser.uid)
+    );
+    const snap = await getDocs(q);
+    allListings = [];
+    snap.forEach(d => allListings.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc (avoids index requirement).
+    allListings.sort((a, b) => {
+      const ta = a.createdAt?.toMillis?.() || 0;
+      const tb = b.createdAt?.toMillis?.() || 0;
+      return tb - ta;
+    });
+
+    renderList();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderList() {
+  const filtered = activeFilter === "ALL"
+    ? allListings
+    : allListings.filter(l => l.status === activeFilter);
+
+  if (filtered.length === 0) {
+    root.replaceChildren(buildEmpty());
+    return;
+  }
+
+  const grid = el("div", "listing-grid");
+  filtered.forEach(l => grid.append(buildCard(l)));
+  root.replaceChildren(grid);
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  const msg = activeFilter === "ALL"
+    ? "You haven't posted any listings yet."
+    : "No listings in this category.";
+  box.append(el("p", "", msg));
+  if (activeFilter === "ALL") {
+    const a = el("a", "btn btn-primary", "Post your first listing");
+    a.href = "create-listing.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+  return box;
+}
+
+function buildCard(p) {
+  const card = el("article", "listing-card");
+
+  const thumb = el("div", "listing-thumb");
+  thumb.append(el("span", "", (p.category || "Item").charAt(0).toUpperCase()));
+  card.append(thumb);
+
+  const body = el("div", "listing-body");
+  body.append(el("h3", "listing-title", p.title));
+  body.append(el("p", "listing-price", peso(p.price)));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", p.condition || "—"));
+  meta.append(el("span", "chip", p.campus || "—"));
+  meta.append(el("span", "status-tag " + (p.status || "AVAILABLE"), p.status || "AVAILABLE"));
+  body.append(meta);
+
+  const stats = el("p", "my-stats");
+  stats.textContent = "Views: " + (p.viewCount || 0) + " • Posted " + fmtDate(p.createdAt);
+  body.append(stats);
+
+  // Quick actions
+  const actions = el("div", "my-actions");
+
+  const view = el("a", "btn btn-outline", "View");
+  view.href = "product.html?id=" + p.id;
+  actions.append(view);
+
+    const edit = el("a", "btn btn-secondary", "Edit");
+    edit.href = "edit-listing.html?id=" + p.id;
+    actions.append(edit);
+
+  // Status toggles: show only the ones that make sense for the current status.
+  if (p.status === "AVAILABLE") {
+    const r = el("button", "btn btn-secondary", "Reserve");
+    r.onclick = () => changeStatus(p.id, "RESERVED");
+    actions.append(r);
+    const s = el("button", "btn btn-secondary", "Mark sold");
+    s.onclick = () => changeStatus(p.id, "SOLD");
+    actions.append(s);
+  } else if (p.status === "RESERVED") {
+    const a = el("button", "btn btn-secondary", "Make available");
+    a.onclick = () => changeStatus(p.id, "AVAILABLE");
+    actions.append(a);
+    const s = el("button", "btn btn-secondary", "Mark sold");
+    s.onclick = () => changeStatus(p.id, "SOLD");
+    actions.append(s);
+  } else if (p.status === "SOLD") {
+    const a = el("button", "btn btn-secondary", "Relist as available");
+    a.onclick = () => changeStatus(p.id, "AVAILABLE");
+    actions.append(a);
+  }
+
+  const del = el("button", "btn btn-danger", "Delete");
+  del.onclick = () => confirmDelete(p.id, p.title);
+  actions.append(del);
+
+  body.append(actions);
+  card.append(body);
+  return card;
+}
+
+async function changeStatus(id, next) {
+  try {
+    await updateDoc(doc(db, "listings", id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    // Update the local cache so the UI reflects the change immediately.
+    const l = allListings.find(x => x.id === id);
+    if (l) l.status = next;
+    toast("Listing marked as " + next.toLowerCase() + ".");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+async function confirmDelete(id, title) {
+  const ok = confirm('Delete "' + title + '"? This cannot be undone.');
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "listings", id));
+    // Best-effort decrement of listingCount.
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        listingCount: increment(-1)
+      });
+    } catch (e) { console.warn(e); }
+
+    allListings = allListings.filter(x => x.id !== id);
+    toast("Listing deleted.");
+    renderList();
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

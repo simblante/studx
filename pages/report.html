@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Report | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <div id="reportRoot">
+    <p class="empty">Loading...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, collection, addDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("reportRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+const params = new URLSearchParams(location.search);
+const listingId = params.get("listing");
+const serviceId = params.get("service");
+const userId = params.get("user");
+const conversationId = params.get("conversation");
+
+let currentUser = null;
+let currentProfile = null;
+let context = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("auth/login.html"); return; }
+  currentUser = user;
+
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    currentProfile = snap.exists() ? snap.data() : null;
+  } catch (e) { console.warn(e); }
+
+  if (!listingId && !serviceId && !userId && !conversationId) {
+    root.replaceChildren(el("p", "empty", "Nothing to report. Please use the Report button on a listing, service, or chat."));
+    return;
+  }
+
+  await loadContext();
+});
+
+async function loadContext() {
+  try {
+    if (listingId) {
+      const snap = await getDoc(doc(db, "listings", listingId));
+      if (snap.exists()) {
+        const l = snap.data();
+        context = {
+          reportedListingId: listingId,
+          reportedServiceId: null,
+          reportedUserId: l.sellerId || null,
+          reportedUserName: l.sellerName || "Student",
+          sourceLabel: "Listing: " + (l.title || "—")
+        };
+      }
+    } else if (serviceId) {
+      const snap = await getDoc(doc(db, "services", serviceId));
+      if (snap.exists()) {
+        const s = snap.data();
+        context = {
+          reportedListingId: null,
+          reportedServiceId: serviceId,
+          reportedUserId: s.providerId || null,
+          reportedUserName: s.providerName || "Student",
+          sourceLabel: "Service: " + (s.title || "—")
+        };
+      }
+    } else if (userId) {
+      const snap = await getDoc(doc(db, "users", userId));
+      if (snap.exists()) {
+        const u = snap.data();
+        context = {
+          reportedListingId: null,
+          reportedServiceId: null,
+          reportedUserId: userId,
+          reportedUserName: u.fullName || "Student",
+          sourceLabel: "User: " + (u.fullName || "Student")
+        };
+      }
+    } else if (conversationId) {
+      const snap = await getDoc(doc(db, "conversations", conversationId));
+      if (snap.exists()) {
+        const c = snap.data();
+        const otherId = (c.participants || []).find(uid => uid !== currentUser.uid);
+        const otherName = (c.participantNames && c.participantNames[otherId]) || "Student";
+        context = {
+          reportedListingId: c.listingId || null,
+          reportedServiceId: null,
+          reportedUserId: otherId || null,
+          reportedUserName: otherName,
+          sourceLabel: "Conversation with " + otherName
+        };
+      }
+    }
+
+    if (!context) {
+      root.replaceChildren(el("p", "empty", "The item you're trying to report could not be found."));
+      return;
+    }
+
+    renderForm();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderForm() {
+  const wrap = el("div");
+
+  wrap.append(el("h1", "", "Report"));
+  wrap.append(el("p", "sub", "Help keep STUDX safe. Reports are reviewed by admins. False reports may result in your account being flagged."));
+
+  // Context summary
+  const summary = el("div", "request-summary");
+  summary.append(el("h3", "", "You are reporting"));
+  summary.append(el("p", "request-seller", context.sourceLabel));
+  if (context.reportedUserName) {
+    summary.append(el("p", "request-seller", "Involved: " + context.reportedUserName));
+  }
+  wrap.append(summary);
+
+  const form = el("form");
+  form.id = "reportForm";
+  form.noValidate = true;
+
+  // Reason dropdown
+  const reasonField = el("div", "field");
+  const rLabel = el("label", "", "Reason");
+  rLabel.setAttribute("for", "reason");
+  reasonField.append(rLabel);
+  const rSelect = el("select");
+  rSelect.id = "reason";
+  const defaultOpt = el("option", "", "Select a reason");
+  defaultOpt.value = "";
+  rSelect.append(defaultOpt);
+  [
+    "Scam or fraud",
+    "Fake listing",
+    "Inappropriate content",
+    "Harassment or threats",
+    "Suspicious account",
+    "Other"
+  ].forEach(r => {
+    const o = el("option", "", r);
+    o.value = r;
+    rSelect.append(o);
+  });
+  reasonField.append(rSelect);
+  form.append(reasonField);
+
+  // Description
+  const descField = el("div", "field");
+  const dLabel = el("label", "", "Description (optional)");
+  dLabel.setAttribute("for", "description");
+  descField.append(dLabel);
+  const ta = el("textarea");
+  ta.id = "description";
+  ta.maxLength = 500;
+  ta.placeholder = "Describe what happened. Include dates and details if possible.";
+  descField.append(ta);
+  descField.append(el("small", "", "Max 500 characters."));
+  form.append(descField);
+
+  const notice = el("div", "notice warn");
+  notice.append(el("b", "", "False reports hurt the community."));
+  notice.append(el("p", "", "Only submit a report if you genuinely believe there is a safety or trust issue. Admins can see who filed each report."));
+  form.append(notice);
+
+  const formMsg = el("p", "form-msg");
+  formMsg.setAttribute("role", "alert");
+  form.append(formMsg);
+
+  const btn = el("button", "btn btn-primary btn-lg", "Submit report");
+  btn.type = "submit";
+  form.append(btn);
+
+  wrap.append(form);
+
+  const back = el("p", "alt-link");
+  const a = el("a", "", "Cancel");
+  a.href = "javascript:history.back()";
+  back.append(a);
+  wrap.append(back);
+
+  root.replaceChildren(wrap);
+
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    handleSubmit(form, async () => {
+      if (!currentUser) throw { userMessage: "Please log in first." };
+
+      const reason = rSelect.value;
+      if (!reason) throw { userMessage: "Please select a reason." };
+
+      const description = ta.value.trim();
+      if (description.length > 500) throw { userMessage: "Description is too long (max 500 characters)." };
+
+      await addDoc(collection(db, "reports"), {
+        reporterId: currentUser.uid,
+        reporterName: currentProfile?.fullName || currentUser.displayName || "Student",
+        reportedUserId: context.reportedUserId || null,
+        reportedUserName: context.reportedUserName || null,
+        reportedListingId: context.reportedListingId || null,
+        reportedServiceId: context.reportedServiceId || null,
+        sourceLabel: context.sourceLabel || "",
+        reason,
+        description,
+        status: "OPEN",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      toast("Report submitted. Thank you for keeping STUDX safe.");
+      setTimeout(() => history.back(), 900);
+    });
+  });
+}
+</script>
+</body>
+</html>

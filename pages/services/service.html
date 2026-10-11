@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Service | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide" id="serviceRoot">
+  <p class="empty">Loading service...</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, deleteDoc, serverTimestamp, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+import { buildHeroUrl } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const root = document.getElementById("serviceRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+const params = new URLSearchParams(location.search);
+const serviceId = params.get("id");
+
+if (!serviceId) {
+  root.replaceChildren(el("p", "empty", "No service specified."));
+}
+
+let currentUser = null;
+let service = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (serviceId) await loadService();
+});
+
+async function loadService() {
+  try {
+    const snap = await getDoc(doc(db, "services", serviceId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This service no longer exists."));
+      return;
+    }
+    service = { id: snap.id, ...snap.data() };
+
+    // Best-effort view counter (do not block rendering).
+    if (service.providerId !== currentUser.uid) {
+      updateDoc(doc(db, "services", serviceId), { viewCount: increment(1) })
+        .catch(() => {});
+    }
+
+    render(service);
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function render(s) {
+  const isOwner = s.providerId === currentUser.uid;
+  const wrap = el("div", "product-wrap");
+
+  // ----- Left column -----
+  const left = el("div", "product-left");
+
+  // ----- Hero: real photo if available, otherwise the gradient tile -----
+  const firstImage = Array.isArray(s.images) && s.images.length > 0 ? s.images[0] : "";
+
+  if (firstImage) {
+    const hero = el("div", "service-hero service-hero-photo");
+    const img = document.createElement("img");
+    img.src = buildHeroUrl(firstImage, 1200);
+    img.alt = s.title || "Service photo";
+    img.loading = "lazy";
+    img.className = "service-hero-img";
+    img.onerror = () => {
+      // Fall back to the gradient tile.
+      const fallback = buildGradientHero(s);
+      hero.replaceWith(fallback);
+    };
+    hero.append(img);
+
+    // Small category badge over the photo.
+    const badge = el("span", "service-hero-badge", s.category || "Service");
+    hero.append(badge);
+
+    left.append(hero);
+  } else {
+    left.append(buildGradientHero(s));
+  }
+
+  left.append(el("h1", "", s.title));
+  left.append(el("p", "product-price", peso(s.price) + " / " + (s.priceUnit || "fixed")));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", s.category || "—"));
+  if (s.subcategory) meta.append(el("span", "chip", s.subcategory));
+  meta.append(el("span", "status-tag " + (s.status || "ACTIVE"), s.status || "ACTIVE"));
+  left.append(meta);
+
+  left.append(el("h2", "product-sec-title", "Description"));
+  left.append(el("p", "product-desc", s.description || "No description provided."));
+
+  left.append(el("h2", "product-sec-title", "Details"));
+  const details = el("ul", "product-details");
+  [
+    ["Availability", s.availability || "—"],
+    ["Category", s.category || "—"],
+    ["Specific service", s.subcategory || "—"],
+    ["Posted", fmtDate(s.createdAt)],
+    ["Views", String(s.viewCount || 0)]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", String(v)));
+    details.append(li);
+  });
+  left.append(details);
+
+  // ----- Right column: provider + actions -----
+  const right = el("aside", "product-right");
+
+  const sellerBox = el("div", "seller-box");
+  sellerBox.append(el("h3", "", "Provider"));
+  const sName = el("div", "seller-row");
+  sName.append(el("div", "avatar small", (s.providerName || "?").charAt(0).toUpperCase()));
+  const sInfo = el("div");
+  sInfo.append(el("p", "seller-fullname", s.providerName || "Student"));
+  if (s.providerSchool) sInfo.append(el("p", "seller-school", s.providerSchool));
+  if (s.providerVerified) sInfo.append(el("span", "vbadge VERIFIED", "Verified Student"));
+  else sInfo.append(el("span", "vbadge PENDING", "Not yet verified"));
+
+  // Rating display from service's denormalized provider stats.
+  const sRating = el("p", "seller-rating");
+  if (Number(s.providerRatingCount || 0) > 0) {
+    sRating.textContent = "★ " + Number(s.providerRatingAverage || 0).toFixed(1) + " (" + s.providerRatingCount + " reviews)";
+  } else {
+    sRating.textContent = "No ratings yet";
+  }
+  sInfo.append(sRating);
+
+  sName.append(sInfo);
+  sellerBox.append(sName);
+
+  right.append(sellerBox);
+
+  // ----- Actions -----
+  const actions = el("div", "product-actions");
+
+  if (isOwner) {
+    const editBtn = el("a", "btn btn-primary", "Edit service");
+    editBtn.href = "edit-service.html?id=" + s.id;
+    actions.append(editBtn);
+
+    if (s.status === "ACTIVE") {
+      const pause = el("button", "btn btn-secondary", "Pause service");
+      pause.onclick = () => changeStatus("PAUSED");
+      actions.append(pause);
+    }
+    if (s.status === "PAUSED") {
+      const act = el("button", "btn btn-secondary", "Activate service");
+      act.onclick = () => changeStatus("ACTIVE");
+      actions.append(act);
+    }
+    if (s.status !== "CLOSED") {
+      const close = el("button", "btn btn-secondary", "Close service");
+      close.onclick = () => changeStatus("CLOSED");
+      actions.append(close);
+    }
+    if (s.status === "CLOSED") {
+      const reopen = el("button", "btn btn-secondary", "Reopen service");
+      reopen.onclick = () => changeStatus("ACTIVE");
+      actions.append(reopen);
+    }
+
+    const del = el("button", "btn btn-danger", "Delete service");
+    del.onclick = () => confirmDelete();
+    actions.append(del);
+  } else {
+    const req = el("button", "btn btn-primary", "Request service (COMING SOON)");
+    req.disabled = true;
+    actions.append(req);
+
+    const msg = el("a", "btn btn-secondary", "Message provider");
+    msg.href = "../social/chat.html?to=" + s.providerId + "&service=" + s.id;
+    actions.append(msg);
+  }
+
+  // Report — positioned at the bottom.
+  const report = el("a", "btn btn-ghost report-btn", "Report this service");
+  report.href = "../report.html?service=" + s.id;
+  actions.append(report);
+
+  right.append(actions);
+
+  // Academic honesty note
+  const note = el("p", "product-note", "STUDX services are for tutoring, mentoring, and legitimate skills. Doing graded work for another student is not allowed.");
+  right.append(note);
+
+  wrap.append(left, right);
+  root.replaceChildren(wrap);
+}
+
+// Original gradient hero used when there's no photo.
+function buildGradientHero(s) {
+  const hero = el("div", "service-hero");
+  hero.append(el("span", "service-hero-cat", s.category || "Service"));
+  if (s.subcategory) hero.append(el("span", "service-hero-sub", s.subcategory));
+  return hero;
+}
+
+async function changeStatus(next) {
+  if (!service) return;
+  try {
+    await updateDoc(doc(db, "services", service.id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    service.status = next;
+    toast("Service marked as " + next.toLowerCase() + ".");
+    render(service);
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+async function confirmDelete() {
+  if (!service) return;
+  const ok = confirm("Delete this service permanently? This cannot be undone.");
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "services", service.id));
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        listingCount: increment(-1)
+      });
+    } catch (e) { console.warn(e); }
+    toast("Service deleted.");
+    setTimeout(() => location.href = "services.html", 700);
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

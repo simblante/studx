@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Request to buy | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <div id="requestRoot">
+    <p class="empty">Loading listing...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, collection, addDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("requestRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+const params = new URLSearchParams(location.search);
+const listingId = params.get("id");
+
+let currentUser = null;
+let listing = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (!listingId) {
+    root.replaceChildren(el("p", "empty", "No listing specified."));
+    return;
+  }
+  await loadListing();
+});
+
+async function loadListing() {
+  try {
+    const snap = await getDoc(doc(db, "listings", listingId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This listing no longer exists."));
+      return;
+    }
+    listing = { id: snap.id, ...snap.data() };
+
+    // Cannot request your own listing.
+    if (listing.sellerId === currentUser.uid) {
+      root.replaceChildren(el("p", "empty", "This is your own listing. You can't request to buy it."));
+      return;
+    }
+
+    // Cannot buy a listing that's already reserved/sold.
+    if (listing.status !== "AVAILABLE") {
+      root.replaceChildren(el("p", "empty", "This listing is no longer available (" + listing.status.toLowerCase() + ")."));
+      return;
+    }
+
+    renderForm();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderForm() {
+  const wrap = el("div");
+
+  wrap.append(el("h1", "", "Request to buy"));
+  wrap.append(el("p", "sub", "Send a request to the seller. They will accept, decline, or ask for more details through messages."));
+
+  // Listing summary
+  const summary = el("div", "request-summary");
+  summary.append(el("h3", "", listing.title));
+  summary.append(el("p", "request-price", peso(listing.price)));
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", listing.condition || "—"));
+  meta.append(el("span", "chip", listing.campus || "—"));
+  if (listing.sellerVerified) meta.append(el("span", "chip swap", "Verified seller"));
+  summary.append(meta);
+  summary.append(el("p", "request-seller", "Seller: " + (listing.sellerName || "Student")));
+  wrap.append(summary);
+
+  // Form
+  const form = el("form");
+  form.id = "requestForm";
+  form.noValidate = true;
+
+  const field = el("div", "field");
+  const label = el("label", "", "Message to seller (optional)");
+  label.setAttribute("for", "message");
+  field.append(label);
+  const ta = el("textarea");
+  ta.id = "message";
+  ta.maxLength = 400;
+  ta.placeholder = "e.g. Hi! Available pa ba ito? Can we meet at the library tomorrow?";
+  field.append(ta);
+  const small = el("small", "", "Max 400 characters. Never share personal contact details or bank info.");
+  field.append(small);
+  form.append(field);
+
+  const notice = el("div", "notice");
+  notice.textContent = "STUDX does not process payments. For MVP, arrange the meetup and payment directly through messages. Meet in a public campus location.";
+  form.append(notice);
+
+  const msg = el("p", "form-msg");
+  msg.setAttribute("role", "alert");
+  form.append(msg);
+
+  const btn = el("button", "btn btn-primary btn-lg", "Send request");
+  btn.type = "submit";
+  form.append(btn);
+
+  wrap.append(form);
+
+  const back = el("p", "alt-link");
+  const a = el("a", "", "Back to listing");
+  a.href = "../marketplace/product.html?id=" + listing.id;
+  back.append(a);
+  wrap.append(back);
+
+  root.replaceChildren(wrap);
+
+  // Wire up submit
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    handleSubmit(form, async () => {
+      if (!currentUser || !listing) throw { userMessage: "Please log in first." };
+
+      const message = ta.value.trim();
+      if (message.length > 400) throw { userMessage: "Message is too long (max 400 characters)." };
+
+      await addDoc(collection(db, "transactions"), {
+        buyerId: currentUser.uid,
+        buyerName: currentUser.displayName || "Student",
+        sellerId: listing.sellerId,
+        sellerName: listing.sellerName || "Student",
+        listingId: listing.id,
+        listingTitle: listing.title,
+        listingPrice: listing.price,
+        message,
+        status: "PENDING",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      toast("Request sent to seller.");
+      // Return to the listing after the request.
+      setTimeout(() => location.href = "../marketplace/product.html?id=" + listing.id, 900);
+    });
+  });
+}
+</script>
+</body>
+</html>

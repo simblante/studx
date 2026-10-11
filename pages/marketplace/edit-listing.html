@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Edit listing | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page">
+  <h1>Edit listing</h1>
+  <p class="sub">Update the details of your listing. Changes are visible immediately.</p>
+
+  <form id="editForm" novalidate>
+    <div class="field">
+      <label for="title">Product title</label>
+      <input id="title" maxlength="80">
+      <small>Max 80 characters.</small>
+    </div>
+
+    <div class="field">
+      <label for="description">Description</label>
+      <textarea id="description" maxlength="600"></textarea>
+      <small>Max 600 characters.</small>
+    </div>
+
+    <div class="field">
+      <label for="category">Category</label>
+      <select id="category">
+        <option value="">Select a category</option>
+        <option>Books</option>
+        <option>Gadgets</option>
+        <option>Electronics</option>
+        <option>Uniforms</option>
+        <option>School Supplies</option>
+        <option>Food</option>
+        <option>Fashion</option>
+        <option>Others</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="price">Price (₱)</label>
+      <input id="price" type="number" min="0" step="1">
+      <small>Enter 0 if swap-only.</small>
+    </div>
+
+    <div class="field">
+      <label for="condition">Condition</label>
+      <select id="condition">
+        <option value="">Select condition</option>
+        <option>Brand New</option>
+        <option>Like New</option>
+        <option>Good</option>
+        <option>Fair</option>
+        <option>Poor</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="quantity">Quantity</label>
+      <input id="quantity" type="number" min="1" step="1">
+    </div>
+
+    <div class="field">
+      <label for="campus">Campus</label>
+      <input id="campus">
+    </div>
+
+    <div class="field">
+      <label for="location">Approximate location</label>
+      <input id="location">
+      <small>Do NOT enter your exact address or dorm room.</small>
+    </div>
+
+    <div class="field">
+      <label for="availableForSwap">Available for swap?</label>
+      <select id="availableForSwap">
+        <option value="no">No — sell only</option>
+        <option value="yes">Yes — open to swap offers</option>
+      </select>
+    </div>
+
+    <!-- Image upload field -->
+    <div class="field">
+      <label for="imageInput">Product photo</label>
+      <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+      <small>JPG, PNG, WEBP, or GIF. Max 5 MB. Leave empty to keep the current photo.</small>
+      <div id="imagePreview" class="image-preview"></div>
+    </div>
+
+    <p class="form-msg" role="alert"></p>
+    <button class="btn btn-primary btn-lg" type="submit">Save changes</button>
+  </form>
+
+  <p class="alt-link"><a id="cancelLink" href="my-listings.html">Cancel</a></p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, handleSubmit, toast, friendlyError } from "../../js/ui.js";
+import { validateListingForm } from "../../js/validate.js";
+import { uploadImage, validateImage, buildThumbUrl } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const form = document.getElementById("editForm");
+const val = id => document.getElementById(id).value.trim();
+const set = (id, v) => { document.getElementById(id).value = v ?? ""; };
+const imageInput = document.getElementById("imageInput");
+const imagePreview = document.getElementById("imagePreview");
+
+const params = new URLSearchParams(location.search);
+const listingId = params.get("id");
+
+if (!listingId) {
+  form.replaceWith(Object.assign(document.createElement("p"),
+    { className: "empty", textContent: "No listing specified." }));
+}
+
+let currentUser = null;
+let listing = null;
+let selectedFile = null;        // new file chosen by the user (not yet uploaded)
+let removeCurrentImage = false; // set to true if the user removes the current image
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (listingId) await loadListing();
+});
+
+async function loadListing() {
+  try {
+    const snap = await getDoc(doc(db, "listings", listingId));
+    if (!snap.exists()) {
+      form.replaceWith(Object.assign(document.createElement("p"),
+        { className: "empty", textContent: "This listing no longer exists." }));
+      return;
+    }
+    listing = { id: snap.id, ...snap.data() };
+
+    // Ownership check — only the seller can edit.
+    if (listing.sellerId !== currentUser.uid) {
+      form.replaceWith(Object.assign(document.createElement("p"),
+        { className: "empty", textContent: "You can only edit your own listings." }));
+      return;
+    }
+
+    // Pre-fill the form.
+    set("title", listing.title);
+    set("description", listing.description);
+    set("category", listing.category);
+    set("price", listing.price);
+    set("condition", listing.condition);
+    set("quantity", listing.quantity);
+    set("campus", listing.campus);
+    set("location", listing.location);
+    set("availableForSwap", listing.availableForSwap ? "yes" : "no");
+
+    // Cancel link goes back to the product page (same folder).
+    document.getElementById("cancelLink").href = "product.html?id=" + listing.id;
+
+    // Show the current image (if any).
+    renderCurrentImage();
+  } catch (err) {
+    form.replaceWith(Object.assign(document.createElement("p"),
+      { className: "empty", textContent: friendlyError(err) }));
+  }
+}
+
+// ---------- Current image preview + remove button ----------
+function renderCurrentImage() {
+  imagePreview.replaceChildren();
+
+  // If the user already chose a new file, show a preview of that instead.
+  if (selectedFile) {
+    showPreview(URL.createObjectURL(selectedFile), true);
+    return;
+  }
+
+  const current = Array.isArray(listing?.images) && listing.images.length > 0 ? listing.images[0] : "";
+  if (current && !removeCurrentImage) {
+    showPreview(buildThumbUrl(current, 400, 300), false);
+  }
+}
+
+// Build the preview image + remove button.
+// `isNewUpload` = true when the preview shows a newly-picked file.
+function showPreview(src, isNewUpload) {
+  const img = document.createElement("img");
+  img.src = src;
+  img.alt = "Listing photo";
+  img.className = "image-preview-img";
+  imagePreview.append(img);
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "btn btn-secondary image-remove";
+  removeBtn.textContent = isNewUpload ? "Remove new photo" : "Remove current photo";
+  removeBtn.onclick = () => {
+    if (isNewUpload) {
+      // Revert to the current image (if any).
+      selectedFile = null;
+      imageInput.value = "";
+      renderCurrentImage();
+    } else {
+      // Mark the current image for removal.
+      removeCurrentImage = true;
+      renderCurrentImage();
+    }
+  };
+  imagePreview.append(removeBtn);
+}
+
+// ---------- Image picker ----------
+imageInput.addEventListener("change", () => {
+  const file = imageInput.files[0];
+  if (!file) return;
+
+  const problem = validateImage(file);
+  if (problem) {
+    const msg = form.querySelector(".form-msg");
+    msg.textContent = problem;
+    msg.className = "form-msg error";
+    imageInput.value = "";
+    return;
+  }
+
+  selectedFile = file;
+  // Clear the "remove current" flag: choosing a new file overrides removal.
+  removeCurrentImage = false;
+  renderCurrentImage();
+});
+
+// ---------- Submit ----------
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  handleSubmit(form, async () => {
+    if (!listing || !currentUser) throw { userMessage: "Listing not loaded yet." };
+
+    const v = {
+      title: val("title"),
+      description: val("description"),
+      category: val("category"),
+      price: Number(val("price")),
+      condition: val("condition"),
+      quantity: Number(val("quantity")),
+      campus: val("campus"),
+      location: val("location"),
+      availableForSwap: val("availableForSwap") === "yes"
+    };
+
+    const problem = validateListingForm(v);
+    if (problem) throw { userMessage: problem };
+
+    // ---------- Work out the final images array ----------
+    let nextImages = Array.isArray(listing.images) ? [...listing.images] : [];
+
+    if (selectedFile) {
+      // New file chosen → upload and replace.
+      const uploadResult = await uploadImage(selectedFile);
+      nextImages = [uploadResult.url];
+    } else if (removeCurrentImage) {
+      // User removed the current image → clear the array.
+      nextImages = [];
+    }
+    // Otherwise: keep the existing images untouched.
+
+    await updateDoc(doc(db, "listings", listing.id), {
+      ...v,
+      images: nextImages,
+      updatedAt: serverTimestamp()
+    });
+
+    toast("Listing updated.");
+    setTimeout(() => location.href = "product.html?id=" + listing.id, 700);
+  });
+});
+</script>
+</body>
+</html>

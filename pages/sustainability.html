@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../css/styles.css">
+  <link rel="stylesheet" href="../css/app.css">
+  <title>Circular Campus | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Circular Campus</h1>
+      <p class="sub">Every reused book, resold uniform, or swapped gadget is one less thing thrown away.</p>
+    </div>
+  </div>
+
+  <div class="notice green-notice">
+    <b>Honest impact tracking.</b> Every number below is calculated from real completed transactions on STUDX. No hard-coded or estimated figures.
+  </div>
+
+  <div id="impactRoot">
+    <p class="empty">Calculating impact...</p>
+  </div>
+
+  <section class="profile-sec" id="sdgSec" style="display:none">
+    <h2>SDG Alignment</h2>
+    <div class="split">
+      <div class="card green-card">
+        <h3>SDG 12: Responsible Consumption and Production</h3>
+        <p>The Circular Campus dashboard tracks how STUDX keeps student items in use longer through resale, reuse, and swapping.</p>
+      </div>
+      <div class="card">
+        <h3>SDG 8: Decent Work and Economic Growth</h3>
+        <p>Every resold item and completed swap represents economic value created within the student community.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { auth, db } from "../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, friendlyError } from "../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("impactRoot");
+const sdgSec = document.getElementById("sdgSec");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("auth/login.html"); return; }
+  await loadImpact();
+});
+
+async function loadImpact() {
+  try {
+    // Pull every SOLD listing and every COMPLETED swap.
+    // Each query uses a single equality filter → no composite index required.
+    const [soldSnap, completedSwaps] = await Promise.all([
+      getDocs(query(
+        collection(db, "listings"),
+        where("status", "==", "SOLD")
+      )),
+      getDocs(query(
+        collection(db, "swapRequests"),
+        where("status", "==", "COMPLETED")
+      ))
+    ]);
+
+    // Count sold listings by category on the client side.
+    // This avoids needing a composite index for (status + category).
+    let books = 0, uniforms = 0, gadgets = 0, electronics = 0, calculators = 0;
+    soldSnap.forEach(d => {
+      const l = d.data();
+      const cat = l.category || "";
+      const title = String(l.title || "").toLowerCase();
+
+      if (cat === "Books") books++;
+      else if (cat === "Uniforms") uniforms++;
+      else if (cat === "Gadgets") gadgets++;
+      else if (cat === "Electronics") electronics++;
+
+      // Count calculators by scanning the title — simple and honest.
+      // A dedicated "Calculators" category could be added later.
+      if (title.includes("calculator")) calculators++;
+    });
+
+    // Combine Gadgets + Electronics as "Gadgets resold" for a simpler single metric.
+    const gadgetsResold = gadgets + electronics;
+
+    const impact = {
+      books,
+      uniforms,
+      calculators,
+      gadgets: gadgetsResold,
+      swaps: completedSwaps.size
+    };
+
+    render(impact);
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function render(i) {
+  const total = i.books + i.uniforms + i.calculators + i.gadgets + i.swaps;
+
+  // If nothing has happened yet, show a friendly empty state instead of a wall of zeros.
+  if (total === 0) {
+    const box = el("div", "empty");
+    box.append(el("p", "", "No completed reuse yet."));
+    box.append(el("p", "sub", "Once items are sold, swapped, or marked as reused, the impact will appear here."));
+    const a = el("a", "btn btn-primary", "Browse marketplace");
+    a.href = "marketplace/marketplace.html";
+    a.style.marginTop = "10px";
+    box.append(a);
+    root.replaceChildren(box);
+    sdgSec.style.display = "";
+    return;
+  }
+
+  const wrap = el("div");
+  wrap.append(el("h2", "impact-heading", "STUDX has kept " + total + " item" + (total === 1 ? "" : "s") + " in use."));
+  wrap.append(el("p", "sub", "Based on " + i.swaps + " completed swap" + (i.swaps === 1 ? "" : "s") + " and " + (i.books + i.uniforms + i.calculators + i.gadgets) + " item" + ((i.books + i.uniforms + i.calculators + i.gadgets) === 1 ? "" : "s") + " marked as sold."));
+
+  const grid = el("div", "impact-grid");
+
+  [
+    { label: "Books reused", value: i.books, icon: "📚" },
+    { label: "Uniforms resold", value: i.uniforms, icon: "👕" },
+    { label: "Calculators reused", value: i.calculators, icon: "🧮" },
+    { label: "Gadgets resold", value: i.gadgets, icon: "💻" },
+    { label: "Items swapped", value: i.swaps, icon: "⇄" }
+  ].forEach(({ label, value, icon }) => {
+    const card = el("div", "impact-card");
+    card.append(el("div", "impact-icon", icon));
+    card.append(el("b", "impact-value", String(value)));
+    card.append(el("span", "impact-label", label));
+    grid.append(card);
+  });
+
+  wrap.append(grid);
+  root.replaceChildren(wrap);
+  sdgSec.style.display = "";
+}
+</script>
+</body>
+</html>

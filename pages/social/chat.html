@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Chat | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide" id="chatRoot">
+  <p class="empty">Loading chat...</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, setDoc, collection, addDoc, query, orderBy, limit,
+  onSnapshot, serverTimestamp, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("chatRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtTime = ts => {
+  if (!ts) return "";
+  try {
+    return ts.toDate().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+  } catch { return ""; }
+};
+
+const params = new URLSearchParams(location.search);
+const existingConvId = params.get("id");           // Mode 1: existing conversation
+const targetUid     = params.get("to");            // Mode 2: new conversation
+const listingId     = params.get("listing");       // Mode 2: optional listing context
+const serviceId     = params.get("service");       // Mode 2: optional service context
+
+let currentUser = null;
+let currentProfile = null;
+let convId = null;
+let convData = null;
+let unsubscribeMsgs = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    currentProfile = snap.exists() ? snap.data() : null;
+  } catch (e) { console.warn(e); }
+
+  if (existingConvId) {
+    await openExistingConversation(existingConvId);
+  } else if (targetUid) {
+    await openOrCreateConversation(targetUid);
+  } else {
+    root.replaceChildren(el("p", "empty", "No conversation specified."));
+  }
+});
+
+// ---------- Mode 1: open existing ----------
+async function openExistingConversation(id) {
+  try {
+    const snap = await getDoc(doc(db, "conversations", id));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This conversation no longer exists."));
+      return;
+    }
+    convData = { id: snap.id, ...snap.data() };
+    if (!convData.participants.includes(currentUser.uid)) {
+      root.replaceChildren(el("p", "empty", "You don't have access to this conversation."));
+      return;
+    }
+    convId = id;
+    renderChat();
+    subscribeMessages();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+// ---------- Mode 2: new (or existing) conversation between two users ----------
+async function openOrCreateConversation(otherUid) {
+  if (otherUid === currentUser.uid) {
+    root.replaceChildren(el("p", "empty", "You can't message yourself."));
+    return;
+  }
+  try {
+    // Look for an existing conversation between these two users.
+    const q = query(
+      collection(db, "conversations"),
+      where("participants", "array-contains", currentUser.uid)
+    );
+    const snap = await getDocs(q);
+    let existing = null;
+    snap.forEach(d => {
+      const data = d.data();
+      if (data.participants && data.participants.includes(otherUid)) {
+        // If a listing context is given, prefer a match.
+        if (!listingId && !serviceId) {
+          if (!existing) existing = { id: d.id, ...data };
+        } else if (listingId && data.listingId === listingId) {
+          existing = { id: d.id, ...data };
+        } else if (serviceId && data.serviceId === serviceId) {
+          existing = { id: d.id, ...data };
+        }
+      }
+    });
+
+    if (existing) {
+      convId = existing.id;
+      convData = existing;
+      renderChat();
+      subscribeMessages();
+      return;
+    }
+
+    // Fetch other user's profile for the participantNames map.
+    const otherSnap = await getDoc(doc(db, "users", otherUid));
+    const otherProfile = otherSnap.exists() ? otherSnap.data() : null;
+
+    // Optional listing / service context.
+    let listingTitle = "";
+    if (listingId) {
+      const l = await getDoc(doc(db, "listings", listingId));
+      if (l.exists()) listingTitle = l.data().title || "";
+    }
+    let serviceTitle = "";
+    if (serviceId) {
+      const s = await getDoc(doc(db, "services", serviceId));
+      if (s.exists()) serviceTitle = s.data().title || "";
+    }
+
+    const newConv = {
+      participants: [currentUser.uid, otherUid],
+      participantNames: {
+        [currentUser.uid]: currentProfile?.fullName || currentUser.displayName || "Student",
+        [otherUid]: otherProfile?.fullName || "Student"
+      },
+      listingId: listingId || null,
+      listingTitle: listingTitle || null,
+      serviceId: serviceId || null,
+      serviceTitle: serviceTitle || null,
+      lastMessage: "",
+      lastMessageAt: serverTimestamp(),
+      lastSenderId: "",
+      createdAt: serverTimestamp()
+    };
+
+    const ref = await addDoc(collection(db, "conversations"), newConv);
+    convId = ref.id;
+    convData = { id: ref.id, ...newConv };
+    renderChat();
+    subscribeMessages();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+// ---------- Render the chat UI ----------
+function renderChat() {
+  const otherId = convData.participants.find(uid => uid !== currentUser.uid);
+  const otherName = (convData.participantNames && convData.participantNames[otherId]) || "Student";
+
+  const wrap = el("div", "chat-wrap");
+
+  // Header
+  const head = el("div", "chat-head");
+  const back = el("a", "chat-back", "← Messages");
+  back.href = "messages.html";
+  head.append(back);
+
+  const headInfo = el("div", "chat-head-info");
+  headInfo.append(el("div", "avatar small", otherName.charAt(0).toUpperCase()));
+  const hText = el("div");
+  hText.append(el("p", "chat-name", otherName));
+  const context = convData.listingTitle
+    ? "Re: " + convData.listingTitle
+    : (convData.serviceTitle ? "Re: " + convData.serviceTitle : "");
+  if (context) hText.append(el("p", "chat-context", context));
+  headInfo.append(hText);
+  head.append(headInfo);
+
+  wrap.append(head);
+
+  // Message list
+  const list = el("div", "chat-list");
+  list.id = "chatList";
+  list.append(el("p", "empty", "Loading messages..."));
+  wrap.append(list);
+
+  // Composer
+  const form = el("form", "chat-form");
+  form.id = "chatForm";
+
+  const ta = el("textarea", "chat-input");
+  ta.id = "chatInput";
+  ta.placeholder = "Type a message...";
+  ta.maxLength = 800;
+  ta.rows = 1;
+  form.append(ta);
+
+  const send = el("button", "btn btn-primary chat-send", "Send");
+  send.type = "submit";
+  form.append(send);
+
+  wrap.append(form);
+
+  const note = el("p", "chat-note", "Never share bank details, phone numbers, or personal info. Meet in a public campus location.");
+  wrap.append(note);
+
+  root.replaceChildren(wrap);
+
+  // Wire send
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    send.disabled = true;
+    try {
+      await sendMessage(text);
+      ta.value = "";
+      scrollToBottom();
+    } catch (err) {
+      toast(friendlyError(err));
+    } finally {
+      send.disabled = false;
+      ta.focus();
+    }
+  });
+
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.dispatchEvent(new Event("submit", { cancelable: true }));
+    }
+  });
+}
+
+// ---------- Real-time messages ----------
+function subscribeMessages() {
+  if (unsubscribeMsgs) unsubscribeMsgs();
+
+  const msgsRef = collection(db, "conversations", convId, "messages");
+  const q = query(msgsRef, orderBy("createdAt", "asc"), limit(200));
+
+  unsubscribeMsgs = onSnapshot(q, snap => {
+    const list = document.getElementById("chatList");
+    if (!list) return;
+
+    if (snap.empty) {
+      list.replaceChildren(el("p", "empty", "No messages yet. Say hi!"));
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    snap.forEach(d => frag.append(buildMessage(d.data())));
+    list.replaceChildren(frag);
+    scrollToBottom();
+  }, err => {
+    toast(friendlyError(err));
+  });
+}
+
+function buildMessage(m) {
+  const mine = m.senderId === currentUser.uid;
+  const row = el("div", "chat-msg " + (mine ? "mine" : "theirs"));
+  const bubble = el("div", "chat-bubble");
+  bubble.append(el("p", "chat-text", m.text));
+  bubble.append(el("span", "chat-time", fmtTime(m.createdAt)));
+  row.append(bubble);
+  return row;
+}
+
+function scrollToBottom() {
+  const list = document.getElementById("chatList");
+  if (list) list.scrollTop = list.scrollHeight;
+}
+
+// ---------- Send a message ----------
+async function sendMessage(text) {
+  const msgsRef = collection(db, "conversations", convId, "messages");
+  await addDoc(msgsRef, {
+    senderId: currentUser.uid,
+    senderName: currentProfile?.fullName || currentUser.displayName || "Student",
+    text,
+    createdAt: serverTimestamp()
+  });
+
+  // Update conversation summary so messages.html can show previews.
+  await setDoc(doc(db, "conversations", convId), {
+    lastMessage: text,
+    lastMessageAt: serverTimestamp(),
+    lastSenderId: currentUser.uid
+  }, { merge: true });
+}
+</script>
+</body>
+</html>

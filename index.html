@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0B1F3A">
+<title>STUDX | Buy. Sell. Swap. Earn.</title>
+<meta name="description" content="The verified student marketplace for affordable products, student services, and campus-to-campus connections.">
+<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="logo" href="index.html" aria-label="STUDX home">
+    <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#2F7BFF"/><path d="M16 6 5 11l11 5 11-5-11-5Z" fill="#fff"/><path d="M9 15v5c0 2 3.5 4 7 4s7-2 7-4v-5l-7 3-7-3Z" fill="#fff" opacity=".8"/></svg>
+    <span>STUD<b>X</b></span>
+  </a>
+  <nav class="nav-links" id="navLinks">
+    <a href="#how">How it works</a>
+    <a href="#services">Services</a>
+    <a href="#smartmatch">SmartMatch</a>
+    <a href="#circular">Circular Campus</a>
+    <a href="#trust">Trust</a>
+  </nav>
+  <div class="nav-cta">
+    <a class="btn btn-ghost" href="pages/auth/login.html">Log in</a>
+    <a class="btn btn-primary" href="pages/auth/register.html">Join STUDX</a>
+  </div>
+  <button class="menu-btn" id="menuBtn" aria-label="Open menu" aria-expanded="false">☰</button>
+</header>
+
+<main>
+<section class="hero">
+  <div class="hero-text">
+    <p class="pill">Student-only • Campus-based</p>
+    <h1>Your Campus.<br>Your Marketplace.</h1>
+    <p class="lead">The verified student marketplace for affordable products, student services, and campus-to-campus connections.</p>
+    <div class="actions">
+      <a class="btn btn-primary btn-lg soon" href="#" data-phase="3">Explore Marketplace</a>
+      <a class="btn btn-outline btn-lg" href="pages/auth/register.html">Join STUDX</a>
+    </div>
+    <p class="fine">Verification is reviewed before a badge is shown. No badge, no claim.</p>
+  </div>
+  <ul class="four" aria-label="What you can do on STUDX">
+    <li><strong>Buy</strong><span>Affordable student gear, books, uniforms</span></li>
+    <li><strong>Sell</strong><span>Turn what you no longer use into cash</span></li>
+    <li><strong>Swap</strong><span>Trade item for item, no money needed</span></li>
+    <li class="green"><strong>Earn</strong><span>Offer tutoring, design, editing and more</span></li>
+  </ul>
+</section>
+
+<section id="how" class="section">
+  <h2>How STUDX works</h2>
+  <ol class="steps">
+    <li><h3>Verify</h3><p>Sign up with your school email and student ID. Admins review each request.</p></li>
+    <li><h3>List or search</h3><p>Post an item or service, or describe what you need to SmartMatch.</p></li>
+    <li><h3>Connect on campus</h3><p>Message the student, agree on a meetup spot, and complete the deal.</p></li>
+    <li><h3>Rate</h3><p>Leave a review after completed deals to build trust for everyone.</p></li>
+  </ol>
+</section>
+
+<section class="section alt">
+  <h2>Popular categories</h2>
+  <div class="chips">
+    <span>Books</span><span>Gadgets</span><span>Electronics</span><span>Uniforms</span><span>School supplies</span><span>Food</span><span>Fashion</span><span>Services</span>
+  </div>
+</section>
+
+<section id="services" class="section">
+  <h2>Student services</h2>
+  <p class="sub">Students helping students with real skills. Tutoring, mentoring and technical help are welcome. Doing graded work for someone else is not allowed.</p>
+  <div class="grid4">
+    <div class="card"><h3>Programming</h3><p>Python, Java, HTML/CSS, web development</p></div>
+    <div class="card"><h3>Creative</h3><p>Graphic design, video editing, photography</p></div>
+    <div class="card"><h3>Academic</h3><p>Tutoring, study help, reviewer preparation</p></div>
+    <div class="card"><h3>Other</h3><p>Printing, computer assistance, technical services</p></div>
+  </div>
+</section>
+
+<section class="section alt">
+  <h2>Why STUDX</h2>
+  <div class="grid4">
+    <div class="card"><h3>Verified students</h3><p>A community built for students, not anonymous strangers.</p></div>
+    <div class="card"><h3>Campus-first</h3><p>Filter by campus and meet at familiar places.</p></div>
+    <div class="card"><h3>Student prices</h3><p>Second-hand and student-to-student deals that fit a student budget.</p></div>
+    <div class="card"><h3>Trust Score</h3><p>Based on completed deals, ratings, verification and reports. It can't be edited by users.</p></div>
+  </div>
+</section>
+
+<section id="smartmatch" class="section">
+  <div class="split">
+    <div>
+      <h2>STUDX SmartMatch</h2>
+      <p class="sub">Tell us what you need and SmartMatch finds the best available student products or services.</p>
+      <p class="honest"><b>How it works today:</b> a transparent, rule-based ranking. It scores each listing on relevance, price, distance, rating, verification and availability. It is not a large AI model. The design allows an AI API to be added later.</p>
+    </div>
+    <div class="demo-box" aria-label="SmartMatch example">
+      <p class="ex-label">Example request</p>
+      <p class="ex">"I need a scientific calculator under ₱500 near campus."</p>
+  <a class="btn btn-primary" href="pages/smartmatch.html">Try SmartMatch</a>
+  <span class="badge">Live now</span>
+    </div>
+  </div>
+</section>
+
+<section id="circular" class="section green-sec">
+  <h2>Circular Campus</h2>
+  <p class="sub">Every reused book, resold uniform or swapped gadget is one less thing thrown away. STUDX tracks books reused, uniforms resold, calculators reused, gadgets resold and items swapped.</p>
+  <p class="honest">These numbers are calculated from real completed transactions. We don't show made-up impact figures.</p>
+<div class="cta-wrap">
+  <a class="btn btn-primary" href="pages/sustainability.html">View Circular Campus dashboard</a>
+</div></section>
+
+<section id="trust" class="section">
+  <h2>Trust &amp; safety</h2>
+  <ul class="ticks">
+    <li>Student verification reviewed by admins (Pending, Verified, Rejected)</li>
+    <li>No phone numbers or private contact details shown by default</li>
+    <li>Report scams, fake listings, harassment or suspicious accounts</li>
+    <li>Ratings only after completed transactions</li>
+  </ul>
+</section>
+
+<section class="section alt" id="sdg">
+  <h2>Our SDG focus</h2>
+  <div class="split">
+    <div class="card"><h3>SDG 8: Decent Work and Economic Growth</h3><p>Students earn from products and legitimate skills and services.</p></div>
+    <div class="card green-card"><h3>SDG 12: Responsible Consumption and Production</h3><p>Resale, reuse and swapping keep student items in use longer.</p></div>
+  </div>
+</section>
+
+<section class="cta">
+  <h2>Join the STUDX community.</h2>
+  <p>Buy. Sell. Swap. Earn.</p>
+  <a class="btn btn-light btn-lg" href="pages/auth/register.html">Join STUDX</a>
+</section>
+</main>
+
+<footer class="footer">
+  <p><b>STUDX</b> • Buy. Sell. Swap. Earn. • MVP in development for Philippine Startup Challenge XI</p>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="js/main.js"></script>
+</body>
+</html>

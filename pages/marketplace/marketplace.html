@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Marketplace | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Marketplace</h1>
+      <p class="sub">Affordable items from verified students on your campus.</p>
+    </div>
+    <a class="btn btn-primary" href="create-listing.html">+ Add listing</a>
+  </div>
+
+  <!-- Category tabs -->
+  <div class="tab-bar" id="categoryBar">
+    <button class="tab active" data-category="ALL">All</button>
+    <button class="tab" data-category="Books">Books</button>
+    <button class="tab" data-category="Gadgets">Gadgets</button>
+    <button class="tab" data-category="Electronics">Electronics</button>
+    <button class="tab" data-category="Uniforms">Uniforms</button>
+    <button class="tab" data-category="School Supplies">School Supplies</button>
+    <button class="tab" data-category="Food">Food</button>
+    <button class="tab" data-category="Fashion">Fashion</button>
+    <button class="tab" data-category="Others">Others</button>
+  </div>
+
+  <!-- Sort dropdown -->
+  <div class="filter-bar">
+    <label for="sortSelect" class="sort-label">Sort by:</label>
+    <select id="sortSelect" class="sort-select">
+      <option value="newest">Newest first</option>
+      <option value="price-asc">Price: low to high</option>
+      <option value="price-desc">Price: high to low</option>
+      <option value="rating">Highest rating</option>
+    </select>
+    <span class="result-count" id="resultCount"></span>
+  </div>
+
+  <div id="listingsRoot">
+    <p class="empty">Loading listings...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, limit, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, friendlyError } from "../../js/ui.js";
+import { buildThumbUrl } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const root = document.getElementById("listingsRoot");
+const categoryBar = document.getElementById("categoryBar");
+const sortSelect = document.getElementById("sortSelect");
+const resultCount = document.getElementById("resultCount");
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+let allListings = [];        // cached from Firestore
+let activeCategory = "ALL";  // ALL or a specific category name
+let activeSort = "newest";
+
+// ---------- Category tabs ----------
+categoryBar.addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  categoryBar.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+  activeCategory = btn.dataset.category;
+  renderList();
+});
+
+// ---------- Sort dropdown ----------
+sortSelect.addEventListener("change", () => {
+  activeSort = sortSelect.value;
+  renderList();
+});
+
+// ---------- Route protection + initial load ----------
+onAuthStateChanged(auth, async user => {
+  if (!user) {
+    location.replace("../auth/login.html");
+    return;
+  }
+  loadListings();
+});
+
+async function loadListings() {
+  try {
+    // Single equality filter only — no composite index needed.
+    // We fetch up to 60 available listings and sort client-side below.
+    const q = query(
+      collection(db, "listings"),
+      where("status", "==", "AVAILABLE"),
+      limit(60)
+    );
+    const snap = await getDocs(q);
+
+    allListings = [];
+    snap.forEach(d => allListings.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by createdAt desc so "newest" is the default.
+    allListings.sort((a, b) =>
+      (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0)
+    );
+
+    renderList();
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+// ---------- Filter + sort + render ----------
+function renderList() {
+  // 1. Filter by category.
+  let list = allListings;
+  if (activeCategory !== "ALL") {
+    list = list.filter(l => l.category === activeCategory);
+  }
+
+  // 2. Sort.
+  list = [...list].sort(getComparator(activeSort));
+
+  // 3. Update count.
+  resultCount.textContent = list.length + " listing" + (list.length === 1 ? "" : "s");
+
+  // 4. Render.
+  if (list.length === 0) {
+    root.replaceChildren(buildEmptyState());
+    return;
+  }
+
+  const grid = el("div", "listing-grid");
+  list.forEach(l => grid.append(buildCard(l)));
+  root.replaceChildren(grid);
+}
+
+function getComparator(sortBy) {
+  switch (sortBy) {
+    case "price-asc":
+      return (a, b) => Number(a.price || 0) - Number(b.price || 0);
+    case "price-desc":
+      return (a, b) => Number(b.price || 0) - Number(a.price || 0);
+    case "rating":
+      return (a, b) => {
+        const ra = Number(a.sellerRatingAverage || 0);
+        const rb = Number(b.sellerRatingAverage || 0);
+        if (rb !== ra) return rb - ra;
+        // Tiebreaker: rating count.
+        return Number(b.sellerRatingCount || 0) - Number(a.sellerRatingCount || 0);
+      };
+    case "newest":
+    default:
+      return (a, b) =>
+        (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0);
+  }
+}
+
+function buildEmptyState() {
+  const box = el("div", "empty");
+
+  // Different message depending on whether a category is selected.
+  const msg = activeCategory === "ALL"
+    ? "No listings yet. Be the first to post something on your campus."
+    : "No listings in this category yet.";
+
+  box.append(el("p", "", msg));
+
+  if (activeCategory === "ALL") {
+    const a = el("a", "btn btn-primary", "Post the first listing");
+    a.href = "create-listing.html";
+    a.style.marginTop = "14px";
+    box.append(a);
+  }
+
+  return box;
+}
+
+function buildCard(p) {
+  const card = el("article", "listing-card");
+
+  // ----- Thumbnail -----
+  const thumb = el("div", "listing-thumb");
+  const firstImage = Array.isArray(p.images) && p.images.length > 0 ? p.images[0] : "";
+
+  if (firstImage) {
+    const img = document.createElement("img");
+    img.src = buildThumbUrl(firstImage, 600, 450);
+    img.alt = p.title || "Listing photo";
+    img.loading = "lazy";
+    img.className = "listing-thumb-img";
+    img.onerror = () => {
+      thumb.replaceChildren(el("span", "", (p.category || "Item").charAt(0).toUpperCase()));
+    };
+    thumb.append(img);
+  } else {
+    thumb.append(el("span", "", (p.category || "Item").charAt(0).toUpperCase()));
+  }
+  card.append(thumb);
+
+  // ----- Body -----
+  const body = el("div", "listing-body");
+  body.append(el("h3", "listing-title", p.title));
+  body.append(el("p", "listing-price", peso(p.price)));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", p.condition || "—"));
+  meta.append(el("span", "chip", p.campus || "—"));
+  if (p.availableForSwap) meta.append(el("span", "chip swap", "Swap OK"));
+  body.append(meta);
+
+  const seller = el("div", "listing-seller");
+  seller.append(el("span", "seller-name", p.sellerName || "Student"));
+  if (p.sellerVerified) seller.append(el("span", "vbadge VERIFIED", "Verified"));
+  body.append(seller);
+
+  if (p.status && p.status !== "AVAILABLE") {
+    body.append(el("span", "status-tag " + p.status, p.status));
+  }
+
+  const link = el("a", "btn btn-outline listing-open", "View");
+  link.href = "product.html?id=" + p.id;
+  body.append(link);
+
+  card.append(body);
+  return card;
+}
+</script>
+</body>
+</html>

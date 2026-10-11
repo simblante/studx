@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0B1F3A">
+    <link rel="stylesheet" href="../../css/styles.css">
+    <link rel="stylesheet" href="../../css/app.css">
+    <title>Log in | STUDX</title>
+  </head>
+  <body>
+    <header id="siteHeader"></header>
+    <main class="page">
+      <h1>Welcome back</h1>
+      <p class="sub">Log in to your STUDX account.</p>
+      <form id="loginForm" novalidate>
+        <div class="field"><label for="email">School email</label><input id="email" type="email" autocomplete="email"></div>
+        <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password"></div>
+        <p class="form-msg" role="alert"></p>
+        <button class="btn btn-primary btn-lg" type="submit">Log in</button>
+      </form>
+      <p class="alt-link"><a href="forgot-password.html">Forgot password?</a></p>
+      <p class="alt-link">New here? <a href="register.html">Join STUDX</a></p>
+    </main>
+    <script type="module">
+      import { renderHeader, handleSubmit } from "../../js/ui.js";
+      import { loginStudent, logout } from "../../js/auth.js";
+
+      renderHeader();
+
+      const form = document.getElementById("loginForm");
+      form.addEventListener("submit", e => {
+        e.preventDefault();
+        handleSubmit(form, async () => {
+          const email = document.getElementById("email").value;
+          const password = document.getElementById("password").value;
+          if (!email || !password) throw { userMessage: "Enter your email and password." };
+
+          // Sign in with Firebase Auth.
+          const cred = await loginStudent(email, password);
+
+          // Enforce email verification before allowing access.
+          if (!cred.user.emailVerified) {
+            // Sign the user out immediately so they can't access anything.
+            await logout();
+            throw {
+              userMessage: "Please verify your email before logging in. Check your inbox and spam folder for the verification link we sent."
+            };
+          }
+
+          location.href = "../profile.html";
+        });
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Messages | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Messages</h1>
+      <p class="sub">Your conversations with other students on STUDX.</p>
+    </div>
+  </div>
+
+  <div class="notice">
+    <b>Safety reminder:</b> Never share phone numbers, bank details, or personal contact info through STUDX until you trust the other student. Reporting tools arrive in a later phase.
+  </div>
+
+  <div id="convRoot">
+    <p class="empty">Loading conversations...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection, query, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, friendlyError } from "../../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("convRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtDateTime = ts => {
+  if (!ts) return "—";
+  try {
+    const d = ts.toDate();
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+    }
+    return d.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+  } catch { return "—"; }
+};
+
+let currentUser = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  await loadConversations();
+});
+
+async function loadConversations() {
+  try {
+    // Single equality filter on array-contains — no composite index needed.
+    const q = query(
+      collection(db, "conversations"),
+      where("participants", "array-contains", currentUser.uid)
+    );
+    const snap = await getDocs(q);
+    const convs = [];
+    snap.forEach(d => convs.push({ id: d.id, ...d.data() }));
+
+    // Sort client-side by lastMessageAt desc — avoids index requirements.
+    convs.sort((a, b) =>
+      (b.lastMessageAt?.toMillis?.() || b.createdAt?.toMillis?.() || 0) -
+      (a.lastMessageAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0)
+    );
+
+    if (convs.length === 0) {
+      root.replaceChildren(buildEmpty());
+      return;
+    }
+
+    const list = el("div", "conv-list");
+    convs.forEach(c => list.append(buildCard(c)));
+    root.replaceChildren(list);
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function buildEmpty() {
+  const box = el("div", "empty");
+  box.append(el("p", "", "No conversations yet."));
+  box.append(el("p", "sub", "Messaging from a listing or service will be available soon. For now, use transactions to arrange deals."));
+  const a = el("a", "btn btn-primary", "Browse marketplace");
+  a.href = "../marketplace/marketplace.html";
+  a.style.marginTop = "10px";
+  box.append(a);
+  return box;
+}
+
+function buildCard(c) {
+  const card = el("a", "conv-card");
+  // chat.html is Phase 6F — link is ready but the page doesn't exist yet.
+  card.href = "chat.html?id=" + c.id;
+
+  // Avatar of the other participant
+  const otherId = (c.participants || []).find(uid => uid !== currentUser.uid);
+  const otherName = (c.participantNames && c.participantNames[otherId]) || "Student";
+
+  const avatar = el("div", "avatar small", otherName.charAt(0).toUpperCase());
+  card.append(avatar);
+
+  const body = el("div", "conv-body");
+
+  const top = el("div", "conv-top");
+  top.append(el("span", "conv-name", otherName));
+  top.append(el("span", "conv-time", fmtDateTime(c.lastMessageAt || c.createdAt)));
+  body.append(top);
+
+  if (c.listingTitle) {
+    body.append(el("p", "conv-listing", "Re: " + c.listingTitle));
+  }
+
+  const preview = c.lastMessage
+    ? (c.lastSenderId === currentUser.uid ? "You: " : "") + c.lastMessage
+    : "No messages yet";
+  body.append(el("p", "conv-preview", preview));
+
+  card.append(body);
+  return card;
+}
+</script>
+</body>
+</html>

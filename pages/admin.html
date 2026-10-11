@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../css/styles.css">
+  <link rel="stylesheet" href="../css/app.css">
+  <title>Admin | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide">
+  <div class="market-head">
+    <div>
+      <h1>Admin dashboard</h1>
+      <p class="sub">Moderation and management tools for STUDX admins.</p>
+    </div>
+  </div>
+
+  <div id="adminRoot">
+    <p class="empty">Verifying admin access...</p>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db } from "../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, deleteDoc, serverTimestamp,
+  collection, query, where, getDocs, orderBy, limit
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../js/ui.js";
+
+renderHeader();
+
+const root = document.getElementById("adminRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+let currentUser = null;
+let currentAdmin = false;
+let currentTab = "overview";
+let cache = {
+  users: [],
+  listings: [],
+  services: [],
+  transactions: [],
+  swaps: [],
+  reports: []
+};
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("auth/login.html"); return; }
+  currentUser = user;
+
+  // Admin check.
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    if (!snap.exists() || snap.data().role !== "admin") {
+      root.replaceChildren(el("p", "empty", "You don't have admin access."));
+      setTimeout(() => location.replace("profile.html"), 1500);
+      return;
+    }
+    currentAdmin = true;
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+    return;
+  }
+
+  renderShell();
+  await loadAll();
+});
+
+// ---------- Shell with tabs ----------
+function renderShell() {
+  const wrap = el("div");
+
+  // Tabs
+  const tabs = el("div", "tab-bar");
+  tabs.id = "adminTabs";
+  [
+    ["overview", "Overview"],
+    ["verifications", "Verifications"],
+    ["listings", "Listings"],
+    ["reports", "Reports"]
+  ].forEach(([key, label], idx) => {
+    const b = el("button", "tab" + (idx === 0 ? " active" : ""), label);
+    b.dataset.tab = key;
+    tabs.append(b);
+  });
+  wrap.append(tabs);
+
+  // Content container
+  const content = el("div");
+  content.id = "adminContent";
+  content.append(el("p", "empty", "Loading..."));
+  wrap.append(content);
+
+  root.replaceChildren(wrap);
+
+  tabs.addEventListener("click", e => {
+    const b = e.target.closest(".tab");
+    if (!b) return;
+    tabs.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === b));
+    currentTab = b.dataset.tab;
+    renderTab();
+  });
+}
+
+// ---------- Load data once ----------
+async function loadAll() {
+  try {
+    const [uSnap, lSnap, sSnap, tSnap, swSnap, rSnap] = await Promise.all([
+      getDocs(collection(db, "users")),
+      getDocs(collection(db, "listings")),
+      getDocs(collection(db, "services")),
+      getDocs(collection(db, "transactions")),
+      getDocs(collection(db, "swapRequests")),
+      getDocs(collection(db, "reports"))
+    ]);
+    cache.users = [];
+    uSnap.forEach(d => cache.users.push({ id: d.id, ...d.data() }));
+    cache.listings = [];
+    lSnap.forEach(d => cache.listings.push({ id: d.id, ...d.data() }));
+    cache.services = [];
+    sSnap.forEach(d => cache.services.push({ id: d.id, ...d.data() }));
+    cache.transactions = [];
+    tSnap.forEach(d => cache.transactions.push({ id: d.id, ...d.data() }));
+    cache.swaps = [];
+    swSnap.forEach(d => cache.swaps.push({ id: d.id, ...d.data() }));
+    cache.reports = [];
+    rSnap.forEach(d => cache.reports.push({ id: d.id, ...d.data() }));
+
+    renderTab();
+  } catch (err) {
+    const c = document.getElementById("adminContent");
+    if (c) c.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function renderTab() {
+  const c = document.getElementById("adminContent");
+  if (!c) return;
+  if (currentTab === "overview") return renderOverview(c);
+  if (currentTab === "verifications") return renderVerifications(c);
+  if (currentTab === "listings") return renderListings(c);
+  if (currentTab === "reports") return renderReports(c);
+}
+
+// ---------- Overview ----------
+function renderOverview(c) {
+  const totalUsers = cache.users.length;
+  const verified = cache.users.filter(u => u.verificationStatus === "VERIFIED").length;
+  const pending = cache.users.filter(u => u.verificationStatus === "PENDING").length;
+  const activeListings = cache.listings.filter(l => l.status === "AVAILABLE").length;
+  const soldListings = cache.listings.filter(l => l.status === "SOLD").length;
+  const completedTx = cache.transactions.filter(t => t.status === "COMPLETED").length;
+  const activeServices = cache.services.filter(s => s.status === "ACTIVE").length;
+  const completedSwaps = cache.swaps.filter(s => s.status === "COMPLETED").length;
+  const openReports = cache.reports.filter(r => r.status === "OPEN").length;
+
+  const wrap = el("div");
+
+  const grid = el("div", "admin-stat-grid");
+  [
+    [totalUsers, "Total users"],
+    [verified, "Verified students"],
+    [pending, "Pending verifications"],
+    [activeListings, "Active listings"],
+    [soldListings, "Sold listings"],
+    [completedTx, "Completed deals"],
+    [activeServices, "Active services"],
+    [completedSwaps, "Completed swaps"],
+    [openReports, "Open reports"]
+  ].forEach(([v, l]) => {
+    const card = el("div", "stat");
+    card.append(el("b", "", String(v)));
+    card.append(el("span", "", l));
+    grid.append(card);
+  });
+  wrap.append(grid);
+
+  if (openReports > 0) {
+    const notice = el("div", "notice warn");
+    notice.append(el("b", "", openReports + " open report" + (openReports === 1 ? "" : "s") + "."));
+    notice.append(el("p", "", "Review them in the Reports tab."));
+    wrap.append(notice);
+  }
+
+  if (pending > 0) {
+    const notice = el("div", "notice");
+    notice.append(el("b", "", pending + " pending verification" + (pending === 1 ? "" : "s") + "."));
+    notice.append(el("p", "", "Approve or reject them in the Verifications tab."));
+    wrap.append(notice);
+  }
+
+  c.replaceChildren(wrap);
+}
+
+// ---------- Verifications ----------
+function renderVerifications(c) {
+  const pending = cache.users.filter(u => u.verificationStatus === "PENDING");
+
+  if (pending.length === 0) {
+    c.replaceChildren(el("p", "empty", "No pending verifications."));
+    return;
+  }
+
+  const list = el("div", "admin-list");
+  pending.forEach(u => {
+    const row = el("div", "admin-row");
+
+    const info = el("div", "admin-row-info");
+    info.append(el("p", "admin-row-title", u.fullName || "Student"));
+    info.append(el("p", "admin-row-meta", (u.school || "—") + " • " + (u.campus || "—")));
+    info.append(el("p", "admin-row-meta", u.email || "—"));
+    row.append(info);
+
+    const actions = el("div", "admin-row-actions");
+
+    const approve = el("button", "btn btn-primary", "Approve");
+    approve.onclick = () => setVerification(u.id, "VERIFIED");
+    actions.append(approve);
+
+    const reject = el("button", "btn btn-danger", "Reject");
+    reject.onclick = () => setVerification(u.id, "REJECTED");
+    actions.append(reject);
+
+    row.append(actions);
+    list.append(row);
+  });
+  c.replaceChildren(list);
+}
+
+async function setVerification(uid, status) {
+  try {
+    await updateDoc(doc(db, "users", uid), {
+      verificationStatus: status,
+      updatedAt: serverTimestamp()
+    });
+    const u = cache.users.find(x => x.id === uid);
+    if (u) u.verificationStatus = status;
+    toast("Verification " + status.toLowerCase() + ".");
+    renderVerifications(document.getElementById("adminContent"));
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+// ---------- Listings moderation ----------
+function renderListings(c) {
+  if (cache.listings.length === 0) {
+    c.replaceChildren(el("p", "empty", "No listings yet."));
+    return;
+  }
+
+  const list = el("div", "admin-list");
+  // Show newest first.
+  const sorted = [...cache.listings].sort((a, b) =>
+    (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  sorted.forEach(l => {
+    const row = el("div", "admin-row");
+    const info = el("div", "admin-row-info");
+    info.append(el("p", "admin-row-title", l.title || "Listing"));
+    info.append(el("p", "admin-row-meta", (l.sellerName || "—") + " • " + (l.category || "—") + " • " + (l.status || "—")));
+    info.append(el("p", "admin-row-meta", "Posted " + fmtDate(l.createdAt)));
+    row.append(info);
+
+    const actions = el("div", "admin-row-actions");
+
+    const view = el("a", "btn btn-outline", "View");
+    view.href = "marketplace/product.html?id=" + l.id;
+    actions.append(view);
+
+    const del = el("button", "btn btn-danger", "Remove");
+    del.onclick = () => removeListing(l.id, l.title);
+    actions.append(del);
+
+    row.append(actions);
+    list.append(row);
+  });
+  c.replaceChildren(list);
+}
+
+async function removeListing(id, title) {
+  const ok = confirm('Remove "' + title + '"? This cannot be undone.');
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "listings", id));
+    cache.listings = cache.listings.filter(x => x.id !== id);
+    toast("Listing removed.");
+    renderListings(document.getElementById("adminContent"));
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+// ---------- Reports ----------
+function renderReports(c) {
+  if (cache.reports.length === 0) {
+    c.replaceChildren(el("p", "empty", "No reports yet."));
+    return;
+  }
+
+  const sorted = [...cache.reports].sort((a, b) =>
+    (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+  const list = el("div", "admin-list");
+  sorted.forEach(r => {
+    const row = el("div", "admin-row");
+    const info = el("div", "admin-row-info");
+    info.append(el("p", "admin-row-title", r.reason || "Report"));
+    info.append(el("p", "admin-row-meta", "By: " + (r.reporterName || "—") + " • " + fmtDate(r.createdAt)));
+    if (r.description) info.append(el("p", "admin-row-meta", r.description));
+    if (r.reportedListingId) info.append(el("p", "admin-row-meta", "Listing: " + r.reportedListingId));
+    row.append(info);
+
+    const actions = el("div", "admin-row-actions");
+
+    const status = el("span", "status-tag " + (r.status || "OPEN"), r.status || "OPEN");
+    actions.append(status);
+
+    if (r.status === "OPEN") {
+      const resolve = el("button", "btn btn-secondary", "Resolve");
+      resolve.onclick = () => setReportStatus(r.id, "RESOLVED");
+      actions.append(resolve);
+
+      const dismiss = el("button", "btn btn-secondary", "Dismiss");
+      dismiss.onclick = () => setReportStatus(r.id, "DISMISSED");
+      actions.append(dismiss);
+    }
+
+    row.append(actions);
+    list.append(row);
+  });
+  c.replaceChildren(list);
+}
+
+async function setReportStatus(id, status) {
+  try {
+    await updateDoc(doc(db, "reports", id), {
+      status,
+      updatedAt: serverTimestamp()
+    });
+    const r = cache.reports.find(x => x.id === id);
+    if (r) r.status = status;
+    toast("Report " + status.toLowerCase() + ".");
+    renderReports(document.getElementById("adminContent"));
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>

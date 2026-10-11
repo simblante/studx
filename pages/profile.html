@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../css/styles.css">
+  <link rel="stylesheet" href="../css/app.css">
+  <title>My profile | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+<main class="page wide" id="profileRoot"><p class="empty">Loading your profile...</p></main>
+<script type="module">
+import { auth, db } from "../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, collection, query, where, getDocs
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../js/ui.js";
+import { resendVerification } from "../js/auth.js";
+import { uploadImage, validateImage, buildThumbUrl } from "../js/cloudinary.js";
+
+renderHeader();
+
+const root = document.getElementById("profileRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+
+// ---------- Trust Score calculation ----------
+// Transparent and deterministic. No fake data.
+function computeTrustScore(profile, stats) {
+  const rating = Number(profile.ratingAverage || 0);
+  const ratingScore = (rating / 5) * 60;
+
+  const verified = profile.verificationStatus === "VERIFIED" ? 15 : 0;
+
+  const txCount = Math.min(stats.completedTransactions || 0, 20);
+  const txScore = (txCount / 20) * 15;
+
+  const swapCount = Math.min(stats.completedSwaps || 0, 10);
+  const swapScore = (swapCount / 10) * 10;
+
+  const total = Math.round(ratingScore + verified + txScore + swapScore);
+  return {
+    total,
+    breakdown: {
+      rating: Math.round(ratingScore),
+      verified,
+      transactions: Math.round(txScore),
+      swaps: Math.round(swapScore)
+    },
+    meta: { rating, txCount, swapCount, verified: profile.verificationStatus === "VERIFIED" }
+  };
+}
+
+let currentUser = null;
+let currentProfile = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("auth/login.html"); return; }
+  currentUser = user;
+  try {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "Your profile isn't set up yet. Please log out and register again, or contact support."));
+      return;
+    }
+    currentProfile = snap.data();
+
+    // Load stats in parallel: listings, services, reviews received, swaps completed.
+    const [myListingsSnap, myServicesSnap, reviewsSnap, ownerSwapsSnap] = await Promise.all([
+      getDocs(query(collection(db, "listings"), where("sellerId", "==", user.uid))),
+      getDocs(query(collection(db, "services"), where("providerId", "==", user.uid))),
+      getDocs(query(collection(db, "reviews"), where("revieweeId", "==", user.uid))),
+      // CORRECT collection name is "swapRequests" (not "swaps").
+      getDocs(query(
+        collection(db, "swapRequests"),
+        where("ownerId", "==", user.uid),
+        where("status", "==", "COMPLETED")
+      ))
+    ]);
+
+    const myListings = [];
+    myListingsSnap.forEach(d => myListings.push({ id: d.id, ...d.data() }));
+    const myServices = [];
+    myServicesSnap.forEach(d => myServices.push({ id: d.id, ...d.data() }));
+    const reviews = [];
+    reviewsSnap.forEach(d => reviews.push({ id: d.id, ...d.data() }));
+    reviews.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
+    // Also count completed swaps where user is the requester.
+    const requesterSwapsSnap = await getDocs(query(
+      collection(db, "swapRequests"),
+      where("requesterId", "==", user.uid),
+      where("status", "==", "COMPLETED")
+    ));
+    const completedSwaps = (ownerSwapsSnap.size || 0) + requesterSwapsSnap.size;
+
+    const stats = {
+      listingCount: myListings.length,
+      serviceCount: myServices.length,
+      completedTransactions: Number(currentProfile.completedTransactions || 0),
+      completedSwaps
+    };
+
+    render(user, currentProfile, myListings, myServices, reviews, stats);
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+});
+
+function render(user, p, myListings, myServices, reviews, stats) {
+  const parts = [];
+
+  // ----- Email verification notice -----
+  if (!user.emailVerified) {
+    const n = el("div", "notice", "Please confirm your school email using the link we sent. ");
+    const b = el("button", "btn btn-outline", "Resend email");
+    b.style.minHeight = "36px";
+    b.onclick = async () => {
+      try { await resendVerification(); toast("Verification email sent."); }
+      catch (e) { toast(friendlyError(e)); }
+    };
+    n.append(b);
+    parts.push(n);
+  }
+
+  // ----- Profile header with avatar upload -----
+  const head = el("div", "profile-head");
+
+  // Avatar wrapper (image or letter fallback)
+  const avatarWrap = el("div", "avatar-wrap");
+
+  const avatar = el("div", "avatar");
+  const photoURL = p.photoURL || "";
+  if (photoURL) {
+    const img = document.createElement("img");
+    img.src = buildThumbUrl(photoURL, 200, 200);
+    img.alt = p.fullName || "Profile photo";
+    img.className = "avatar-img";
+    img.onerror = () => {
+      // Fallback to letter if image fails to load.
+      avatar.replaceChildren(el("span", "", (p.fullName || "?").trim().charAt(0).toUpperCase()));
+    };
+    avatar.append(img);
+  } else {
+    avatar.append(el("span", "", (p.fullName || "?").trim().charAt(0).toUpperCase()));
+  }
+  avatarWrap.append(avatar);
+
+  // Hidden file input + "Change photo" button
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/jpeg,image/png,image/webp,image/gif";
+  fileInput.style.display = "none";
+  fileInput.id = "avatarFileInput";
+  avatarWrap.append(fileInput);
+
+  const changeBtn = el("button", "btn btn-secondary avatar-change-btn", photoURL ? "Change photo" : "Add photo");
+  changeBtn.type = "button";
+  changeBtn.onclick = () => fileInput.click();
+  avatarWrap.append(changeBtn);
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const problem = validateImage(file);
+    if (problem) {
+      toast(problem);
+      fileInput.value = "";
+      return;
+    }
+
+    // Show a loading state.
+    changeBtn.disabled = true;
+    const originalLabel = changeBtn.textContent;
+    changeBtn.textContent = "Uploading...";
+
+    try {
+      const result = await uploadImage(file);
+      await updateDoc(doc(db, "users", user.uid), {
+        photoURL: result.url
+      });
+
+      // Update the local copy + re-render.
+      p.photoURL = result.url;
+      currentProfile.photoURL = result.url;
+
+      toast("Profile photo updated.");
+      render(user, p, myListings, myServices, reviews, stats);
+    } catch (err) {
+      toast(friendlyError(err));
+      changeBtn.disabled = false;
+      changeBtn.textContent = originalLabel;
+    } finally {
+      fileInput.value = "";
+    }
+  });
+
+  head.append(avatarWrap);
+
+  const info = el("div");
+  info.append(el("h1", "", p.fullName));
+  info.append(el("p", "sub", (p.school || "") + " \u2022 " + (p.campus || "")));
+  const label = {
+    VERIFIED: "Verified Student",
+    PENDING: "Verification pending",
+    REJECTED: "Verification rejected"
+  }[p.verificationStatus] || "Verification pending";
+  info.append(el("span", "vbadge " + p.verificationStatus, label));
+  head.append(info);
+  parts.push(head);
+
+  // ----- Verification notices -----
+  if (p.verificationStatus === "PENDING") {
+    parts.push(el("div", "notice", "An admin will review your details. You'll get the Verified badge once approved."));
+  }
+  if (p.verificationStatus === "REJECTED") {
+    parts.push(el("div", "notice", "Your verification was not approved. Please contact support to try again."));
+  }
+
+  // ----- Trust Score card -----
+  const trust = computeTrustScore(p, stats);
+  const trustSec = el("section", "profile-sec trust-sec");
+  trustSec.append(el("h2", "", "Trust Score"));
+  const trustHead = el("div", "trust-head");
+  const trustCircle = el("div", "trust-circle");
+  trustCircle.append(el("b", "", trust.total + "/100"));
+  trustHead.append(trustCircle);
+  const trustBreakdown = el("ul", "trust-breakdown");
+  [
+    ["Rating", trust.breakdown.rating, 60, (trust.meta.rating ? trust.meta.rating.toFixed(1) + "★" : "No ratings yet")],
+    ["Verified", trust.breakdown.verified, 15, (trust.meta.verified ? "Verified student" : "Not yet verified")],
+    ["Transactions", trust.breakdown.transactions, 15, trust.meta.txCount + " completed"],
+    ["Swaps", trust.breakdown.swaps, 10, trust.meta.swapCount + " completed"]
+  ].forEach(([lbl, val, max, note]) => {
+    const li = el("li", "trust-row");
+    const left = el("div", "trust-row-left");
+    left.append(el("span", "trust-row-label", lbl));
+    left.append(el("span", "trust-row-note", note));
+    li.append(left);
+    const right = el("div", "trust-row-right");
+    const track = el("div", "trust-track");
+    const fill = el("div", "trust-fill");
+    fill.style.width = (val / max * 100) + "%";
+    track.append(fill);
+    right.append(track);
+    right.append(el("span", "trust-val", val + "/" + max));
+    li.append(right);
+    trustBreakdown.append(li);
+  });
+  trustHead.append(trustBreakdown);
+  trustSec.append(trustHead);
+  trustSec.append(el("p", "trust-note", "Trust Score is calculated from real platform activity. It cannot be edited by users."));
+  parts.push(trustSec);
+
+  // ----- Stats -----
+  const statsGrid = el("div", "stats");
+  const rated = Number(p.ratingCount || 0) > 0;
+  [
+    [rated ? Number(p.ratingAverage).toFixed(1) + "★" : "—", "Rating (" + Number(p.ratingCount || 0) + ")"],
+    [String(stats.listingCount), "Listings"],
+    [String(stats.serviceCount), "Services"],
+    [String(stats.completedTransactions), "Completed deals"]
+  ].forEach(([v, l]) => {
+    const s = el("div", "stat");
+    s.append(el("b", "", v), el("span", "", l));
+    statsGrid.append(s);
+  });
+  parts.push(statsGrid);
+
+  // ----- Services offered -----
+  const svcSec = el("section", "profile-sec");
+  const svcHead = el("div", "profile-sec-head");
+  svcHead.append(el("h2", "", "Services offered"));
+  const svcAdd = el("a", "btn btn-secondary", "Manage services");
+  svcAdd.href = "services/my-services.html";
+  svcHead.append(svcAdd);
+  svcSec.append(svcHead);
+
+  if (myServices.length === 0) {
+    svcSec.append(el("p", "empty", "You haven't offered any services yet."));
+  } else {
+    const list = el("div", "profile-mini-list");
+    myServices.forEach(s => {
+      const card = el("a", "mini-card");
+      card.href = "services/service.html?id=" + s.id;
+      card.append(el("span", "mini-cat", (s.category || "Service")));
+      card.append(el("p", "mini-title", s.title || "Service"));
+      card.append(el("p", "mini-meta", peso(s.price) + " / " + (s.priceUnit || "fixed")));
+      const st = el("span", "status-tag " + (s.status || "ACTIVE"), s.status || "ACTIVE");
+      card.append(st);
+      list.append(card);
+    });
+    svcSec.append(list);
+  }
+  parts.push(svcSec);
+
+  // ----- Listings -----
+  const lstSec = el("section", "profile-sec");
+  const lstHead = el("div", "profile-sec-head");
+  lstHead.append(el("h2", "", "Listings"));
+  const lstAdd = el("a", "btn btn-secondary", "Manage listings");
+  lstAdd.href = "marketplace/my-listings.html";
+  lstHead.append(lstAdd);
+  lstSec.append(lstHead);
+
+  if (myListings.length === 0) {
+    lstSec.append(el("p", "empty", "You haven't posted any listings yet."));
+  } else {
+    const list = el("div", "profile-mini-list");
+    myListings.forEach(l => {
+      const card = el("a", "mini-card");
+      card.href = "marketplace/product.html?id=" + l.id;
+      card.append(el("span", "mini-cat", (l.category || "Item")));
+      card.append(el("p", "mini-title", l.title || "Listing"));
+      card.append(el("p", "mini-meta", peso(l.price) + " • " + (l.condition || "—")));
+      const st = el("span", "status-tag " + (l.status || "AVAILABLE"), l.status || "AVAILABLE");
+      card.append(st);
+      list.append(card);
+    });
+    lstSec.append(list);
+  }
+  parts.push(lstSec);
+
+  // ----- Reviews received -----
+  const revSec = el("section", "profile-sec");
+  const revHead = el("div", "profile-sec-head");
+  revHead.append(el("h2", "", "Reviews (" + reviews.length + ")"));
+  revSec.append(revHead);
+
+  if (reviews.length === 0) {
+    revSec.append(el("p", "empty", "No reviews yet. Reviews appear after completed transactions and swaps."));
+  } else {
+    const list = el("div", "review-list");
+    reviews.forEach(r => {
+      const card = el("article", "review-card");
+      const head = el("div", "review-head");
+      head.append(el("div", "avatar small", (r.reviewerName || "?").charAt(0).toUpperCase()));
+      const info = el("div", "review-info");
+      info.append(el("p", "review-name", r.reviewerName || "Student"));
+      const stars = el("p", "review-stars");
+      stars.textContent = "★".repeat(r.rating) + "☆".repeat(5 - r.rating);
+      info.append(stars);
+      head.append(info);
+      head.append(el("span", "review-date", fmtDate(r.createdAt)));
+      card.append(head);
+
+      if (r.comment) {
+        card.append(el("p", "review-comment", r.comment));
+      }
+      if (r.sourceLabel) {
+        card.append(el("p", "review-source", r.sourceLabel));
+      }
+      list.append(card);
+    });
+    revSec.append(list);
+  }
+  parts.push(revSec);
+
+  root.replaceChildren(...parts);
+}
+</script>
+</body>
+</html>

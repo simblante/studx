@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B1F3A">
+  <link rel="stylesheet" href="../../css/styles.css">
+  <link rel="stylesheet" href="../../css/app.css">
+  <title>Listing | STUDX</title>
+</head>
+<body>
+<header id="siteHeader"></header>
+
+<main class="page wide" id="productRoot">
+  <p class="empty">Loading listing...</p>
+</main>
+
+<script type="module">
+import { auth, db } from "../../js/firebase.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  doc, getDoc, updateDoc, deleteDoc, serverTimestamp, increment
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { renderHeader, toast, friendlyError } from "../../js/ui.js";
+import { buildHeroUrl } from "../../js/cloudinary.js";
+
+renderHeader();
+
+const root = document.getElementById("productRoot");
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const peso = n => "₱" + Number(n || 0).toLocaleString("en-PH");
+const fmtDate = ts => {
+  if (!ts) return "—";
+  try { return ts.toDate().toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }); }
+  catch { return "—"; }
+};
+
+const params = new URLSearchParams(location.search);
+const listingId = params.get("id");
+
+if (!listingId) {
+  root.replaceChildren(el("p", "empty", "No listing specified."));
+}
+
+let currentUser = null;
+let listing = null;
+
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.replace("../auth/login.html"); return; }
+  currentUser = user;
+  if (listingId) await loadListing();
+});
+
+async function loadListing() {
+  try {
+    const snap = await getDoc(doc(db, "listings", listingId));
+    if (!snap.exists()) {
+      root.replaceChildren(el("p", "empty", "This listing no longer exists."));
+      return;
+    }
+    listing = { id: snap.id, ...snap.data() };
+
+    // Best-effort view counter (do not block rendering).
+    if (listing.sellerId !== currentUser.uid) {
+      updateDoc(doc(db, "listings", listingId), { viewCount: increment(1) })
+        .catch(() => {});
+    }
+
+    render(listing);
+  } catch (err) {
+    root.replaceChildren(el("p", "empty", friendlyError(err)));
+  }
+}
+
+function render(p) {
+  const isOwner = p.sellerId === currentUser.uid;
+  const wrap = el("div", "product-wrap");
+
+  // ----- Left column: image + details -----
+  const left = el("div", "product-left");
+
+  // ----- Hero: real photo if available, otherwise a letter tile -----
+  const hero = el("div", "product-hero");
+  const firstImage = Array.isArray(p.images) && p.images.length > 0 ? p.images[0] : "";
+
+  if (firstImage) {
+    const img = document.createElement("img");
+    img.src = buildHeroUrl(firstImage, 1200);
+    img.alt = p.title || "Listing photo";
+    img.loading = "lazy";
+    img.className = "product-hero-img";
+    // Fall back to the letter tile if the image fails to load.
+    img.onerror = () => {
+      hero.replaceChildren(el("span", "", (p.category || "Item").charAt(0).toUpperCase()));
+    };
+    hero.append(img);
+  } else {
+    hero.append(el("span", "", (p.category || "Item").charAt(0).toUpperCase()));
+  }
+  left.append(hero);
+
+  left.append(el("h1", "", p.title));
+  left.append(el("p", "product-price", peso(p.price)));
+
+  const meta = el("div", "listing-meta");
+  meta.append(el("span", "chip", p.condition || "—"));
+  meta.append(el("span", "chip", p.campus || "—"));
+  if (p.availableForSwap) meta.append(el("span", "chip swap", "Swap OK"));
+  meta.append(el("span", "status-tag " + (p.status || "AVAILABLE"), p.status || "AVAILABLE"));
+  left.append(meta);
+
+  left.append(el("h2", "product-sec-title", "Description"));
+  left.append(el("p", "product-desc", p.description || "No description provided."));
+
+  left.append(el("h2", "product-sec-title", "Details"));
+  const details = el("ul", "product-details");
+  [
+    ["Quantity", p.quantity || 1],
+    ["Location", p.location || "—"],
+    ["Category", p.category || "—"],
+    ["Posted", fmtDate(p.createdAt)],
+    ["Views", String(p.viewCount || 0)]
+  ].forEach(([k, v]) => {
+    const li = el("li");
+    li.append(el("b", "", k + ": "), el("span", "", String(v)));
+    details.append(li);
+  });
+  left.append(details);
+
+  // ----- Right column: seller + actions -----
+  const right = el("aside", "product-right");
+
+  const sellerBox = el("div", "seller-box");
+  sellerBox.append(el("h3", "", "Seller"));
+  const sName = el("div", "seller-row");
+  sName.append(el("div", "avatar small", (p.sellerName || "?").charAt(0).toUpperCase()));
+  const sInfo = el("div");
+  sInfo.append(el("p", "seller-fullname", p.sellerName || "Student"));
+  if (p.sellerSchool) sInfo.append(el("p", "seller-school", p.sellerSchool));
+  if (p.sellerVerified) sInfo.append(el("span", "vbadge VERIFIED", "Verified Student"));
+  else sInfo.append(el("span", "vbadge PENDING", "Not yet verified"));
+
+  // Rating display — read from listing's denormalized seller stats.
+  const sRating = el("p", "seller-rating");
+  if (Number(p.sellerRatingCount || 0) > 0) {
+    sRating.textContent = "★ " + Number(p.sellerRatingAverage || 0).toFixed(1) + " (" + p.sellerRatingCount + " reviews)";
+  } else {
+    sRating.textContent = "No ratings yet";
+  }
+  sInfo.append(sRating);
+
+  sName.append(sInfo);
+  sellerBox.append(sName);
+
+  // Trust hint — link to see the seller's reviews on their profile.
+  if (Number(p.sellerRatingCount || 0) > 0) {
+    const link = el("a", "seller-reviews-link", "See all reviews →");
+    link.href = "seller.html?id=" + p.sellerId;   // Phase 10 — COMING SOON
+    link.style.pointerEvents = "none";             // Disabled until Phase 10
+    link.style.opacity = "0.5";
+    sellerBox.append(link);
+  }
+  right.append(sellerBox);
+
+  // ----- Actions -----
+  const actions = el("div", "product-actions");
+
+  if (isOwner) {
+    // Owner controls (Section 9 — Edit / Delete / Mark sold / reserved)
+    const editBtn = el("a", "btn btn-primary", "Edit listing");
+    editBtn.href = "edit-listing.html?id=" + p.id;
+    actions.append(editBtn);
+
+    if (p.status !== "RESERVED" && p.status !== "SOLD") {
+      const rBtn = el("button", "btn btn-secondary", "Mark as reserved");
+      rBtn.onclick = () => changeStatus("RESERVED");
+      actions.append(rBtn);
+    }
+
+    if (p.status !== "SOLD") {
+      const sBtn = el("button", "btn btn-secondary", "Mark as sold");
+      sBtn.onclick = () => changeStatus("SOLD");
+      actions.append(sBtn);
+    }
+
+    if (p.status !== "AVAILABLE") {
+      const aBtn = el("button", "btn btn-secondary", "Mark as available");
+      aBtn.onclick = () => changeStatus("AVAILABLE");
+      actions.append(aBtn);
+    }
+
+    const dBtn = el("button", "btn btn-danger", "Delete listing");
+    dBtn.onclick = () => deleteListing();
+    actions.append(dBtn);
+  } else {
+    // Buyer actions
+    const buy = el("a", "btn btn-primary", "Request to buy");
+    buy.href = "../transactions/request-buy.html?id=" + p.id;
+    actions.append(buy);
+
+    const msg = el("a", "btn btn-secondary", "Message seller");
+    msg.href = "../social/chat.html?to=" + p.sellerId + "&listing=" + p.id;
+    actions.append(msg);
+
+    if (p.availableForSwap) {
+      const swap = el("a", "btn btn-secondary", "Offer a swap");
+      swap.href = "../transactions/offer-swap.html?id=" + p.id;
+      actions.append(swap);
+    }
+  }
+
+  // Report — positioned at the bottom.
+  const report = el("a", "btn btn-ghost report-btn", "Report this listing");
+  report.href = "../report.html?listing=" + p.id;
+  actions.append(report);
+
+  right.append(actions);
+
+  // Warning about reporting — for Phase 10.
+  const note = el("p", "product-note", "Meet in a public place on campus. Do not share personal contact details until you trust the other student. Reporting tools arrive in a later phase.");
+  right.append(note);
+
+  wrap.append(left, right);
+  root.replaceChildren(wrap);
+}
+
+async function changeStatus(next) {
+  if (!listing) return;
+  try {
+    await updateDoc(doc(db, "listings", listing.id), {
+      status: next,
+      updatedAt: serverTimestamp()
+    });
+    listing.status = next;
+    toast("Listing marked as " + next.toLowerCase() + ".");
+    render(listing);
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+
+async function deleteListing() {
+  if (!listing) return;
+  const ok = confirm("Delete this listing permanently? This cannot be undone.");
+  if (!ok) return;
+  try {
+    await deleteDoc(doc(db, "listings", listing.id));
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid), {
+        listingCount: increment(-1)
+      });
+    } catch (e) { console.warn(e); }
+    toast("Listing deleted.");
+    setTimeout(() => location.href = "marketplace.html", 700);
+  } catch (err) {
+    toast(friendlyError(err));
+  }
+}
+</script>
+</body>
+</html>
