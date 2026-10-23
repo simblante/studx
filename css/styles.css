@@ -657,3 +657,13 @@ h3 {
   max-width: 1060px;
   margin: 16px auto 0;
 }
+
+.footer-credit a {
+  color: var(--blue);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.footer-credit a:hover {
+  text-decoration: underline;
+}

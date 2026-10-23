@@ -1,24 +1,34 @@
-# Hide Firebase config
-js/firebase-config.js
+# Environment Variables
+.env
+.env.local
+.env.*.local
 
-# OS files
+# Firebase Admin Secrets
+serviceAccountKey.json
+*-firebase-adminsdk-*.json
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# System & OS Files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Editor
+# Editor & IDE Files
 .vscode/
 .idea/
 *.swp
+*.swo
 
-# Logs
+# Logs & Debugging
 *.log
-npm-debug.log*
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
 
-# Dependencies
-node_modules/
-
-# Environment files
-.env
-.env.local
-.env.*.local
+# Temporary Files
+*.tmp
+*.bak
+*.cache
